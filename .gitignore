@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Probe output -- can contain session paths, cwd and cost figures
+probe-dump.jsonl
+
+# Local scratch
+*.log
+.DS_Store
+Thumbs.db

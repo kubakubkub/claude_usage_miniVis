@@ -1,0 +1,8 @@
+# overlay.pyw needs nothing beyond the standard library (Tkinter).
+# These are only required by the tray icon (tray.pyw).
+pystray>=0.19.5
+Pillow>=10.0.0
+
+# pystray's macOS backend is built on PyObjC.
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
