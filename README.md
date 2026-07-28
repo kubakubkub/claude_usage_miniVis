@@ -101,11 +101,18 @@ create here, no key to paste anywhere.
 ```powershell
 git clone https://github.com/kubakubkub/claude_usage_miniVis.git
 cd claude_usage_miniVis
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Then double-click **`install-statusline.bat`** — it backs up `settings.json`
+Then double-click **`setup.bat`** — it creates `.venv` and installs the
+dependencies. It's safe to re-run: an existing venv is reused and its packages
+just refreshed. If Python isn't on PATH, or `python` opens the Microsoft Store
+instead of running, it says exactly what to fix.
+
+Prefer the command line? `python -m venv .venv` then
+`.\.venv\Scripts\python.exe -m pip install -r requirements.txt` does the same
+thing.
+
+Next, double-click **`install-statusline.bat`** — it backs up `settings.json`
 with a timestamp and writes only the `statusLine` key. No hand-editing, no jq.
 
 ```
@@ -142,12 +149,15 @@ and PyObjC on macOS — all handled by `setup`.
 
 | Double-click | Does |
 |---|---|
+| `setup.bat` | create the venv + install deps (once, after cloning) |
+| `choose.bat` | preview the presets, then start one |
 | `start-tray.bat` | tray icon |
 | `stop-tray.bat` | stop it |
 | `start-overlay.bat` | floating desktop badge |
 | `stop-overlay.bat` | stop it |
 
-All four refuse to double-start and print a clear error if the venv is missing.
+The launchers refuse to double-start, and point you at `setup.bat` if the venv
+is missing.
 
 ### Start at login
 

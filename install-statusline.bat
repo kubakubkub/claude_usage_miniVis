@@ -8,7 +8,7 @@ set "ROOT=%~dp0"
 set "PY=%ROOT%.venv\Scripts\python.exe"
 
 if not exist "%PY%" (
-  echo [WARN] venv not found, falling back to system python.
+  echo [WARN] venv not found ^(run setup.bat^), falling back to system python.
   set "PY=python"
 )
 

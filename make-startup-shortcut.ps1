@@ -25,8 +25,8 @@ if ($Remove) {
     return
 }
 
-if (-not (Test-Path $pythonw)) { throw "pythonw.exe not found at $pythonw -- create the venv first." }
-if (-not (Test-Path $script))  { throw "tray.pyw not found at $script" }
+if (-not (Test-Path $pythonw)) { throw "pythonw.exe not found at $pythonw -- run setup.bat first." }
+if (-not (Test-Path $script))  { throw "$name not found at $script" }
 
 $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut($lnk)
