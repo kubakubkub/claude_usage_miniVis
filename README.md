@@ -31,8 +31,8 @@ The statusLine payload is not a documented, stable API. If a Claude Code upgrade
 renames a field this degrades to `--` rather than breaking; re-verify with
 `probe_statusline.py` and open an issue.
 
-macOS was first run end-to-end on 2026-08-10 and works, with two platform quirks
-handled in code — see [macOS notes](#macos-notes). Linux support is real code —
+macOS was first run end-to-end on 2026-08-10 and works, with three platform
+quirks handled in code — see [macOS notes](#macos-notes). Linux support is real code —
 path handling, the launcher script, the Tk fallbacks — but has not been run
 there yet. Ghost mode is Windows-only by design (see below). Reports and PRs
 welcome.
