@@ -25,6 +25,61 @@ POLL_SECONDS = 5
 ICON_SIZE = 64
 COLOR_TEXT = (255, 255, 255)
 
+
+def _install_retina_menubar_icon():
+    """macOS: stop the menu-bar icon being drawn at half resolution.
+
+    pystray's darwin backend sizes the status-item image in PIXELS to the menu
+    bar thickness -- 22 -- and hands AppKit a 22x22 PNG. AppKit then reads that
+    as 22 POINTS, so on any Retina display it is stretched over 44 device pixels
+    from a 22-pixel source. The icon is not the wrong size, it is the right size
+    and blurry, which is why it reads as a soft blob next to the crisp system
+    icons beside it.
+
+    The fix is the standard one for AppKit: back the image at the screen's scale
+    factor (44x44 px) and declare its size in points (22x22), so it is drawn 1:1.
+
+    This overrides a private pystray method, so it is written to fail soft: any
+    error here leaves pystray's own implementation in place and costs sharpness,
+    never the tray icon itself.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import io
+        import AppKit
+        import Foundation
+
+        def _assert_image(self):
+            thickness = int(self._status_bar.thickness())        # points (22)
+            screens = AppKit.NSScreen.screens()
+            scale = max([s.backingScaleFactor() for s in screens] or [1.0])
+            px = int(round(thickness * scale))                   # 44 on Retina
+
+            if self._icon_image and self._icon_image.size().width == thickness:
+                return
+
+            source = self._icon
+            if source.size != (px, px):
+                source = source.resize((px, px), Image.LANCZOS)
+
+            b = io.BytesIO()
+            source.save(b, "png")
+            image = AppKit.NSImage.alloc().initWithData_(
+                Foundation.NSData(b.getvalue()))
+            # Points, not pixels -- this is what makes it render 1:1.
+            image.setSize_(AppKit.NSMakeSize(thickness, thickness))
+
+            self._icon_image = image
+            self._status_item.button().setImage_(image)
+
+        pystray.Icon._assert_image = _assert_image
+    except Exception:
+        pass
+
+
+_install_retina_menubar_icon()
+
 # Windows tray tooltips are capped at 127 characters.
 TOOLTIP_MAX = 126
 

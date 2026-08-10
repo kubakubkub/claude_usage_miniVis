@@ -27,7 +27,15 @@ need_venv() {
 }
 
 # Match a running component by the script name in its command line.
-pids_for() { pgrep -f "[p]ython.*$1" 2>/dev/null || true; }
+#
+# Case-INSENSITIVE (-i) on purpose. A Tk process on macOS does not keep the venv's
+# lowercase "python" in its command line: Tkinter needs a windowed app bundle, so the
+# interpreter re-execs itself through the framework stub and argv becomes
+#   .../Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python overlay.pyw
+# -- every "python" in that string is capitalised. A case-sensitive pattern therefore never
+# matches on macOS, and the launcher reports "failed to stay running" for a process that
+# started perfectly well, then leaves it orphaned (stop/status cannot see it either).
+pids_for() { pgrep -if "python.*$1" 2>/dev/null || true; }
 
 start_bg() {
   local script="$1" label="$2"
