@@ -1,6 +1,6 @@
 # Creates a Startup shortcut so the tray launches at login.
 # NOT run automatically -- run it yourself when you want it installed:
-#   powershell -ExecutionPolicy Bypass -File .\make-startup-shortcut.ps1
+#   powershell -ExecutionPolicy Bypass -File .\windows\make-startup-shortcut.ps1
 #
 # To undo: delete the .lnk from the folder printed at the end, or run with -Remove
 
@@ -10,7 +10,9 @@ param([switch]$Remove, [switch]$Overlay, [switch]$Chooser)
 
 $ErrorActionPreference = 'Stop'
 
-$root     = Split-Path -Parent $MyInvocation.MyCommand.Path
+# This script lives in windows\; the venv and the .pyw files are one level up.
+$here     = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root     = Split-Path -Parent $here
 $pythonw  = Join-Path $root '.venv\Scripts\pythonw.exe'
 if ($Chooser)      { $name = 'chooser.pyw'; $label = 'Claude Usage Chooser' }
 elseif ($Overlay)  { $name = 'overlay.pyw'; $label = 'Claude Usage Overlay' }

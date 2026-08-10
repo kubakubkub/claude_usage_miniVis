@@ -3,7 +3,9 @@ rem Opens the visual chooser: preview all three presets, set ghost/size/opacity,
 rem and start the overlay or tray from there. No console window.
 setlocal
 
-set "ROOT=%~dp0"
+rem Lives in windows\; the Python and the venv are one level up.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "ROOT=%ROOT%\"
 set "PYW=%ROOT%.venv\Scripts\pythonw.exe"
 set "APP=%ROOT%chooser.pyw"
 

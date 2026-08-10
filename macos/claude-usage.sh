@@ -14,7 +14,10 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# This script lives in macos/; the Python it runs and the venv it uses are one
+# level up, shared with the Windows launchers in windows/.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 VENV="$ROOT/.venv"
 PY="$VENV/bin/python"
 
@@ -68,12 +71,38 @@ stop_one() {
   echo "$label stopped."
 }
 
+# Apple's /usr/bin/python3 ships Tk 8.5.9 (2010), which on a current macOS opens
+# windows that never paint: right size, right position, reports itself onscreen,
+# draws nothing. The tray icon still works (it is Pillow + AppKit, no Tk), so the
+# failure looks like "the badge is broken" rather than "this Python is unusable".
+# Say so at setup time instead of letting that be discovered the hard way.
+check_tk() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  local ver
+  ver="$("$PY" -c 'import tkinter; r=tkinter.Tk(); print(r.tk.call("info","patchlevel"))' 2>/dev/null || echo "none")"
+  case "$ver" in
+    none)
+      echo "[WARN] This Python has no working tkinter -- the overlay and chooser"
+      echo "       cannot open. The tray icon will still work."
+      ;;
+    8.5*)
+      echo
+      echo "[WARN] Tk $ver detected (Apple's system Python)."
+      echo "       Its windows open but never render, so the overlay and chooser"
+      echo "       will be empty rectangles. The tray icon is unaffected."
+      echo "       Fix: install a Python with Tk 8.6 (python.org or Homebrew),"
+      echo "       then:  rm -rf '$VENV' && python3.13 -m venv '$VENV' && $0 setup"
+      ;;
+  esac
+}
+
 case "${1:-}" in
   setup)
     echo "Creating venv at $VENV"
     python3 -m venv "$VENV"
     "$PY" -m pip install --quiet --upgrade pip
     "$PY" -m pip install --quiet -r "$ROOT/requirements.txt"
+    check_tk
     echo "Done. Next:  ./claude-usage.sh install"
     ;;
   install)   need_venv; "$PY" "$ROOT/install_statusline.py" ;;

@@ -3,7 +3,9 @@ rem Starts the Claude usage tray with no console window.
 rem Double-click this, or point a Startup shortcut at it.
 setlocal
 
-set "ROOT=%~dp0"
+rem Lives in windows\; the Python and the venv are one level up.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "ROOT=%ROOT%\"
 set "PYW=%ROOT%.venv\Scripts\pythonw.exe"
 set "APP=%ROOT%tray.pyw"
 

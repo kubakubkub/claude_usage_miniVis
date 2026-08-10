@@ -69,7 +69,6 @@ class Overlay:
         self.root = tk.Tk()
         self.root.title("Claude usage")
         self.root.overrideredirect(True)          # frameless, no taskbar entry
-        self._force_float_macos()                 # must precede -topmost, see below
         self.root.attributes("-topmost", True)
 
         self.frame = tk.Frame(self.root, bg=DARK_BG, padx=10, pady=7)
@@ -88,46 +87,49 @@ class Overlay:
         # size rather than at the width of the "--" placeholder.
         self.refresh()
         self._restore_position()
+        # Deferred on purpose -- see _float_above_macos: the window has to be
+        # mapped before the level sticks.
+        self.root.after(300, self._float_above_macos)
         self.root.after(POLL_MS, self._tick)
 
     # ---------- appearance helpers ----------
 
-    def _force_float_macos(self):
+    def _float_above_macos(self):
         """Actually make the badge stay on top on macOS.
 
         `-topmost` is a no-op under the Tk 8.5 that ships with Apple's system
         Python: measured with CGWindowListCopyWindowInfo, the window still comes
         out at layer 0 (normal), so the badge is created correctly, sits at the
         right coordinates, reports onscreen=True -- and is buried behind every
-        ordinary window. It looks like it never launched.
+        ordinary window. It looks exactly like it never launched.
 
-        Promoting the window to the Aqua `floating` class puts it at layer 3,
-        which is what -topmost is supposed to do. Deliberately requested WITHOUT
-        the `noActivates` attribute: that also yields layer 3, but stops the
-        window taking clicks, which would cost us the drag and the right-click
-        menu.
+        So we set the NSWindow level ourselves. This runs deferred, via after(),
+        because it only takes once the window has actually been mapped: called
+        inline during __init__ -- even after update() -- the level is reset and
+        the window stays at layer 0.
 
-        CALL ORDER MATTERS, and it is the opposite of what you would guess: this
-        has to run BEFORE `wm attributes -topmost` is set. Measured on Tk 8.5 --
+        REJECTED ALTERNATIVE, do not reintroduce: promoting the window to the
+        Aqua `floating` class with ::tk::unsupported::MacWindowStyle also reaches
+        layer 3, and looks like the tidier, dependency-free fix. It is not. It
+        quietly undoes overrideredirect -- the badge comes back with a full title
+        bar and traffic lights, 24px taller, and its content never renders, i.e.
+        an empty decorated window. Both the class change and the blank body were
+        reproduced directly.
 
-            style -> topmost .......... layer 3   (works)
-            style, no topmost ......... layer 3   (works)
-            topmost -> style .......... layer 0   (silently does nothing)
-
-        Once -topmost has been set the style call still returns success and still
-        changes nothing, so there is no error to notice. Do not "tidy" this call
-        down next to the other window setup.
-
-        Wrapped in try/except because ::tk::unsupported:: is, as the name says,
-        unsupported -- if a future Tk drops or renames it we lose always-on-top,
-        not the whole overlay.
+        pyobjc is already a macOS requirement for the tray, but the overlay is
+        meant to run on the standard library alone, so a missing AppKit costs
+        always-on-top and nothing else.
         """
         if sys.platform != "darwin":
             return
         try:
-            self.root.call("::tk::unsupported::MacWindowStyle",
-                           "style", self.root._w, "floating")
-        except tk.TclError:
+            import AppKit
+            app = AppKit.NSApp()
+            if app is None:
+                return
+            for window in app.windows():
+                window.setLevel_(AppKit.NSFloatingWindowLevel)
+        except Exception:
             pass
 
     def _f(self, size):

@@ -4,7 +4,9 @@ rem Run with:  install-statusline.bat            (install)
 rem            install-statusline.bat --uninstall (remove)
 setlocal
 
-set "ROOT=%~dp0"
+rem Lives in windows\; the Python and the venv are one level up.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "ROOT=%ROOT%\"
 set "PY=%ROOT%.venv\Scripts\python.exe"
 
 if not exist "%PY%" (

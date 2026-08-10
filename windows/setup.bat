@@ -1,10 +1,14 @@
 @echo off
-rem One-time setup: creates .venv next to this file and installs dependencies.
+rem One-time setup: creates .venv in the repo root and installs dependencies.
 rem Double-click it, or run:  setup.bat
 rem Safe to re-run -- an existing venv is reused and its deps just refreshed.
 setlocal
 
-set "ROOT=%~dp0"
+rem This launcher lives in windows\. The Python, the venv and requirements.txt
+rem sit one level up, shared with the macOS launcher in macos\, so ROOT is the
+rem PARENT of this folder. %%~fI normalises the "..' away for tidy messages.
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "ROOT=%ROOT%\"
 set "VENV=%ROOT%.venv"
 set "PY=%VENV%\Scripts\python.exe"
 

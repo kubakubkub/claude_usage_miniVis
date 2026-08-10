@@ -23,16 +23,19 @@ detail lives in your terminal status line; this is the ambient version.
 |---|---|
 | Claude Code | verified against **v2.1.220** |
 | Windows 11 | developed and tested |
-| macOS 26, Apple silicon | **verified** — statusline, overlay and tray all run |
+| macOS 26, Apple silicon | statusline + tray **verified**; overlay/chooser Windows-only in practice |
 | Linux | **written, not yet verified** |
-| Python | 3.12 tested; also run on macOS system Python **3.9.6 / Tk 8.5** |
+| Python | 3.12 tested. On macOS **do not use system Python** — see below |
 
 The statusLine payload is not a documented, stable API. If a Claude Code upgrade
 renames a field this degrades to `--` rather than breaking; re-verify with
 `probe_statusline.py` and open an issue.
 
-macOS was first run end-to-end on 2026-08-10 and works, with three platform
-quirks handled in code — see [macOS notes](#macos-notes). Linux support is real code —
+macOS was first run end-to-end on 2026-08-10. The statusline and the menu-bar
+icon work and are the supported macOS surface. The **overlay badge and chooser
+are Windows features in practice**: they are Tk windows, and the Tk 8.5.9 in
+Apple's `/usr/bin/python3` cannot draw widgets on a current macOS at all — see
+[macOS notes](#macos-notes). Linux support is real code —
 path handling, the launcher script, the Tk fallbacks — but has not been run
 there yet. Ghost mode is Windows-only by design (see below). Reports and PRs
 welcome.
@@ -99,6 +102,19 @@ explanatory tooltip rather than a misleading 0%.
 signed in on a Pro/Max subscription, and Python 3. That's it — no account to
 create here, no key to paste anywhere.
 
+Launchers are split by platform: **everything you double-click for Windows is in
+`windows\`, and everything for macOS is in `macos\`**. The Python itself is
+shared and stays in the repo root, along with the single `.venv` both sides use
+— so there is exactly one copy of the actual program, and picking the wrong
+folder is impossible rather than merely discouraged.
+
+```
+claude_usage_miniVis/
+  statusline.py  overlay.pyw  tray.pyw  chooser.pyw  usage_*.py   <- shared
+  windows/   setup.bat, start/stop-*.bat, make-startup-shortcut.ps1
+  macos/     Setup.command, Start-Tray.command, ... + claude-usage.sh
+```
+
 ### Windows
 
 ```powershell
@@ -106,7 +122,7 @@ git clone https://github.com/kubakubkub/claude_usage_miniVis.git
 cd claude_usage_miniVis
 ```
 
-Then double-click **`setup.bat`** — it creates `.venv` and installs the
+Then double-click **`windows\setup.bat`** — it creates `.venv` and installs the
 dependencies. It's safe to re-run: an existing venv is reused and its packages
 just refreshed. If Python isn't on PATH, or `python` opens the Microsoft Store
 instead of running, it says exactly what to fix.
@@ -115,8 +131,9 @@ Prefer the command line? `python -m venv .venv` then
 `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` does the same
 thing.
 
-Next, double-click **`install-statusline.bat`** — it backs up `settings.json`
-with a timestamp and writes only the `statusLine` key. No hand-editing, no jq.
+Next, double-click **`windows\install-statusline.bat`** — it backs up
+`settings.json` with a timestamp and writes only the `statusLine` key. No
+hand-editing, no jq.
 
 ```
 install-statusline.bat              install
@@ -133,40 +150,109 @@ silently. A timestamped backup is written either way, and `--uninstall` only
 removes the key; restoring your previous one means copying it back from that
 backup.
 
-### macOS / Linux
+### macOS
+
+On macOS you get the **statusline**, the **menu-bar icon** and the terminal
+`status` readout. The draggable overlay badge and the chooser are effectively
+**Windows-only** — they are Tk windows, and Tk cannot draw on Apple's system
+Python (see [macOS notes](#macos-notes)). Nothing here needs them.
+
+Open the **`macos`** folder and double-click, in this order:
+
+| Double-click | Does |
+|---|---|
+| `Setup.command` | create the venv + install deps (once, after cloning) |
+| `Install-Statusline.command` | wire the statusline into Claude Code |
+| `Start-Tray.command` | menu-bar icon |
+| `Status.command` | what's running + the current numbers |
+| `Stop.command` | stop the tray |
+
+They exist because Finder will not run a bare `.sh` — each is a two-line wrapper
+around `claude-usage.sh`, which remains the real launcher and is what you want
+from a terminal:
 
 ```bash
-chmod +x claude-usage.sh
-./claude-usage.sh setup      # venv + deps
-./claude-usage.sh install    # wire up settings.json (backs up first)
-./claude-usage.sh overlay    # or: tray
-./claude-usage.sh status     # what's running + current numbers
-./claude-usage.sh stop
+macos/claude-usage.sh setup      # venv + deps
+macos/claude-usage.sh install    # wire up settings.json (backs up first)
+macos/claude-usage.sh tray       # menu-bar icon
+macos/claude-usage.sh status     # what's running + current numbers
+macos/claude-usage.sh stop
+```
+
+`overlay` and `choose` still exist as subcommands and work on a Python with **Tk
+8.6**, but they get no `.command` file — a double-click that reliably opens an
+empty window is worse than no double-click at all.
+
+Restart Claude Code after `install`. The first time you double-click a
+`.command`, Gatekeeper may ask you to confirm — right-click → Open once, and it
+stops asking.
+
+### Linux
+
+Use `macos/claude-usage.sh` — the script itself is POSIX shell and platform-neutral
+despite the folder name; only the `.command` wrappers beside it are Mac-specific.
+Written but not yet verified on Linux.
+
+```bash
+macos/claude-usage.sh setup
+macos/claude-usage.sh install
+macos/claude-usage.sh overlay
 ```
 
 The overlay needs only Tkinter (standard library). On Debian/Ubuntu that's
 `sudo apt install python3-tk`. The tray additionally needs pystray + Pillow,
 and PyObjC on macOS — all handled by `setup`.
 
-The `chmod` is only needed if your checkout lost the exec bit; it is committed
-set.
+Exec bits are committed, so no `chmod` is needed unless your checkout lost them
+(`chmod +x macos/*.command macos/claude-usage.sh`).
 
 ## macOS notes
 
-Everything works, including on Apple's system Python (3.9.6, **Tk 8.5**). Three
-things behave differently there, all handled — recorded here because each one
-looks like a different bug than it is.
+### Do not use Apple's system Python for the windows
 
-**Always-on-top.** Tk 8.5's Aqua port does not implement `wm attributes
--topmost`: it reports success and does nothing, leaving the overlay at the
-normal window layer where every ordinary window covers it. The badge is created
-correctly, sits at the right coordinates and reports itself on-screen — it is
-simply buried, which looks exactly like "it never started". `overlay.pyw`
-promotes the window to the Aqua `floating` class instead, which is what
-`-topmost` was meant to do.
+**`/usr/bin/python3` ships Tk 8.5.9 — released in 2010 — and it cannot draw
+widgets on a current macOS.** The window opens at the right size and position,
+reports itself on-screen, and renders *nothing*: no background, no text, an
+empty rectangle. Confirmed on macOS 26.5.2 with a plain `Frame` + `Label` in a
+normal, undecorated window, so it is not the overlay's frameless styling, its
+window level, or ghost mode — Tk simply does not paint.
 
-That call has to run **before** `-topmost` is set. In the other order it still
-returns success and still changes nothing.
+That kills the **overlay**, the **chooser** and the settings window. The **tray
+icon is unaffected** and works fine on system Python, because it never uses Tk:
+it draws with Pillow and hands AppKit an `NSImage`. So "menu-bar icon fine, but
+the badge is an empty window" is the signature of exactly this problem.
+
+Install a Python that bundles **Tk 8.6** — the python.org macOS installer does,
+Homebrew's `python-tk` does — and rebuild the venv with it:
+
+```bash
+rm -rf .venv
+python3.13 -m venv .venv          # any python.org / brew 3.x with Tk 8.6
+macos/claude-usage.sh setup
+```
+
+Check what you have with:
+
+```bash
+python3 -c "import tkinter; r=tkinter.Tk(); print(r.tk.call('info','patchlevel'))"
+```
+
+`8.5.9` is the broken one. `setup` warns about it too.
+
+### Always-on-top
+
+Tk 8.5's Aqua port does not implement `wm attributes -topmost`: it reports
+success and does nothing, leaving the overlay at the normal window layer where
+every ordinary window covers it — created correctly, right coordinates,
+on-screen, and buried. `overlay.pyw` sets the `NSWindow` level directly through
+AppKit instead, deferred via `after()` because it only sticks once the window
+has been mapped.
+
+**Rejected alternative, do not reintroduce:** promoting the window to the Aqua
+`floating` class with `::tk::unsupported::MacWindowStyle` also reaches the
+floating layer and looks like the tidier, dependency-free fix. It silently
+undoes `overrideredirect` — the badge comes back 24px taller with a full title
+bar and traffic lights, and its content never renders.
 
 **Menu-bar icon resolution.** pystray sizes the status-item image in pixels to
 the menu bar thickness (22) and hands AppKit a 22×22 PNG, which AppKit reads as
@@ -183,13 +269,16 @@ re-execs through the framework stub and its command line becomes
 perfectly healthy process as failed and then orphans it where `stop` cannot see
 it.
 
-Ghost mode remains Windows-only (`-transparentcolor` is not available on Aqua)
+### Ghost mode
+
+Windows-only. Aqua Tk has no `-transparentcolor` at all — it raises
+`bad attribute "-transparentcolor": must be -alpha, -fullscreen, -modified,
+-notify, -titlepath, -topmost, or -transparent` — so the overlay catches that
 and falls back to the normal dark panel, as the settings window says.
 
-If you are on a newer Tk (3.12 from python.org bundles 8.6) the always-on-top
-workaround is harmless — the `floating` class is still the correct way to do it.
-
 ## Run (Windows)
+
+Everything here lives in the **`windows`** folder.
 
 | Double-click | Does |
 |---|---|
@@ -201,15 +290,17 @@ workaround is harmless — the `floating` class is still the correct way to do i
 | `stop-overlay.bat` | stop it |
 
 The launchers refuse to double-start, and point you at `setup.bat` if the venv
-is missing.
+is missing. They resolve the venv and the `.pyw` files one level up, so they
+work double-clicked from Explorer regardless of the current directory — but
+they do expect to stay inside `windows\`.
 
 ### Start at login
 
 Not installed automatically — run it yourself:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\make-startup-shortcut.ps1            # tray
-powershell -ExecutionPolicy Bypass -File .\make-startup-shortcut.ps1 -Overlay   # overlay
+powershell -ExecutionPolicy Bypass -File .\windows\make-startup-shortcut.ps1            # tray
+powershell -ExecutionPolicy Bypass -File .\windows\make-startup-shortcut.ps1 -Overlay   # overlay
 ```
 
 Undo with `-Remove`, or delete the `.lnk` from `shell:startup` (Win+R).
@@ -232,9 +323,9 @@ Tray icons across the range — the colour is a continuous ramp, not fixed bands
 
 ![chooser](screenshots/chooser.png)
 
-Double-click **`choose.bat`** (or `./claude-usage.sh choose`) to preview all
-three presets side by side, drawn with the same code the live widget uses and
-with your real current usage. Picking one applies immediately, so anything
+Double-click **`windows\choose.bat`** to preview all three presets side by side,
+drawn with the same code the live widget uses and with your real current usage.
+(Windows only in practice — it is a Tk window, see [macOS notes](#macos-notes).) Picking one applies immediately, so anything
 already running updates while you watch.
 
 From there you can start the overlay or the tray directly — it goes through the
@@ -244,7 +335,7 @@ Put **`chooser.pyw`** in Startup instead of a visualizer if you'd rather pick a
 look each session than have one restored:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\make-startup-shortcut.ps1 -Chooser
+powershell -ExecutionPolicy Bypass -File .\windows\make-startup-shortcut.ps1 -Chooser
 ```
 
 ## Three presets
@@ -355,6 +446,8 @@ Format adapts to distance: `14:10` today, `Tue 23:00` within the week,
 
 ## Files
 
+Shared, in the repo root — the actual program, one copy for both platforms:
+
 | File | Purpose |
 |------|---------|
 | `statusline.py` | Claude Code statusLine: mirrors payload, prints status line |
@@ -363,18 +456,26 @@ Format adapts to distance: `14:10` today, `Tue 23:00` within the week,
 | `tray.pyw` | Tray / menu-bar icon (pystray + Pillow) |
 | `overlay.pyw` | Floating desktop badge (Tkinter only) |
 | `chooser.pyw` | Preset picker with live previews (Tkinter only) |
-| `choose.bat` | Double-click to open the chooser |
 | `install_statusline.py` | Safe settings.json editor (backup + atomic write) |
-| `install-statusline.bat` | Windows wrapper for the above |
-| `claude-usage.sh` | macOS/Linux launcher for everything |
-| `start/stop-*.bat` | Windows launchers |
-| `make-startup-shortcut.ps1` | Creates/removes the Startup shortcut |
 | `probe_statusline.py` | Re-verify the payload shape after a Claude Code upgrade |
+
+Platform launchers — thin, and the only files that differ per OS:
+
+| File | Purpose |
+|------|---------|
+| `windows\setup.bat` | Create the venv + install deps |
+| `windows\install-statusline.bat` | Wrapper for `install_statusline.py` |
+| `windows\choose.bat` | Double-click to open the chooser |
+| `windows\start/stop-*.bat` | Start/stop the tray and overlay |
+| `windows\make-startup-shortcut.ps1` | Creates/removes the Startup shortcut |
+| `macos/claude-usage.sh` | The real macOS/Linux launcher for everything |
+| `macos/*.command` | Double-clickable Finder wrappers (tray + statusline only) |
 
 ## If the schema changes after an upgrade
 
 Point `statusLine.command` at `probe_statusline.py`, let it capture a few
-renders into `probe-dump.jsonl`, inspect it, then run `install-statusline.bat`
+renders into `probe-dump.jsonl`, inspect it, then re-run the installer
+(`windows\install-statusline.bat` or `macos/Install-Statusline.command`)
 to switch back. The probe writes a dump and nothing else.
 
 ## Notes
