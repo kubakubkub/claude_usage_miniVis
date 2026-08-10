@@ -23,16 +23,19 @@ detail lives in your terminal status line; this is the ambient version.
 |---|---|
 | Claude Code | verified against **v2.1.220** |
 | Windows 11 | developed and tested |
-| macOS / Linux | **written, not yet verified** |
-| Python | 3.12 tested |
+| macOS 26, Apple silicon | **verified** — statusline, overlay and tray all run |
+| Linux | **written, not yet verified** |
+| Python | 3.12 tested; also run on macOS system Python **3.9.6 / Tk 8.5** |
 
 The statusLine payload is not a documented, stable API. If a Claude Code upgrade
 renames a field this degrades to `--` rather than breaking; re-verify with
 `probe_statusline.py` and open an issue.
 
-macOS/Linux support is real code — path handling, the launcher script, the Tk
-fallbacks — but has not been run on those platforms yet. Ghost mode is
-Windows-only by design (see below). Reports and PRs welcome.
+macOS was first run end-to-end on 2026-08-10 and works, with two platform quirks
+handled in code — see [macOS notes](#macos-notes). Linux support is real code —
+path handling, the launcher script, the Tk fallbacks — but has not been run
+there yet. Ghost mode is Windows-only by design (see below). Reports and PRs
+welcome.
 
 ## Requires Claude Code
 
@@ -144,6 +147,47 @@ chmod +x claude-usage.sh
 The overlay needs only Tkinter (standard library). On Debian/Ubuntu that's
 `sudo apt install python3-tk`. The tray additionally needs pystray + Pillow,
 and PyObjC on macOS — all handled by `setup`.
+
+The `chmod` is only needed if your checkout lost the exec bit; it is committed
+set.
+
+## macOS notes
+
+Everything works, including on Apple's system Python (3.9.6, **Tk 8.5**). Three
+things behave differently there, all handled — recorded here because each one
+looks like a different bug than it is.
+
+**Always-on-top.** Tk 8.5's Aqua port does not implement `wm attributes
+-topmost`: it reports success and does nothing, leaving the overlay at the
+normal window layer where every ordinary window covers it. The badge is created
+correctly, sits at the right coordinates and reports itself on-screen — it is
+simply buried, which looks exactly like "it never started". `overlay.pyw`
+promotes the window to the Aqua `floating` class instead, which is what
+`-topmost` was meant to do.
+
+That call has to run **before** `-topmost` is set. In the other order it still
+returns success and still changes nothing.
+
+**Menu-bar icon resolution.** pystray sizes the status-item image in pixels to
+the menu bar thickness (22) and hands AppKit a 22×22 PNG, which AppKit reads as
+22 *points* — so on a Retina display it is stretched across 44 device pixels
+from a 22-pixel source, and reads as a soft blob beside the crisp system icons.
+`tray.pyw` backs the image at the screen's scale factor and declares its size in
+points, so it draws 1:1. It is the right size either way; only the sharpness
+changes.
+
+**Process detection.** Tkinter needs a windowed app bundle, so the interpreter
+re-execs through the framework stub and its command line becomes
+`.../Python.app/Contents/MacOS/Python overlay.pyw` — every "python" capitalised.
+`claude-usage.sh` matches case-insensitively; a case-sensitive match reports a
+perfectly healthy process as failed and then orphans it where `stop` cannot see
+it.
+
+Ghost mode remains Windows-only (`-transparentcolor` is not available on Aqua)
+and falls back to the normal dark panel, as the settings window says.
+
+If you are on a newer Tk (3.12 from python.org bundles 8.6) the always-on-top
+workaround is harmless — the `floating` class is still the correct way to do it.
 
 ## Run (Windows)
 
