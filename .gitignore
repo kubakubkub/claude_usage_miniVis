@@ -9,6 +9,18 @@ env/
 # Probe output -- can contain session paths, cwd and cost figures
 probe-dump.jsonl
 
+# Claude Code's local settings: permission lists with local paths
+.claude/settings.local.json
+
+# Terms check_private.py blocks -- the list of what to keep private is private
+.private-terms
+
+# This tool's data lives in ~/.claude, never here; ignore any strays
+usage-mirror.json
+usage-history*.jsonl
+usage-model.json
+usage-learn.lock
+
 # Local scratch
 *.log
 .DS_Store
