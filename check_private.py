@@ -175,6 +175,11 @@ def unpushed_commits():
     return [sha for sha in git("rev-list", "HEAD", "--not", "--remotes").split() if sha]
 
 
+def known_commit(sha: str) -> bool:
+    result = subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"], cwd=ROOT, capture_output=True)
+    return result.returncode == 0
+
+
 def pushed_commits(stdin_text: str):
     """Commits a push would send, from the refs git passes to pre-push."""
     shas = []
@@ -185,7 +190,10 @@ def pushed_commits(stdin_text: str):
         _local_ref, local_sha, _remote_ref, remote_sha = parts
         if ZERO_SHA.match(local_sha):
             continue  # deleting a remote branch publishes nothing
-        if ZERO_SHA.match(remote_sha):
+        if ZERO_SHA.match(remote_sha) or not known_commit(remote_sha):
+            # A new branch, or the remote moved to a commit this clone hasn't
+            # fetched: check everything that isn't on any known remote. Git
+            # itself then rejects a push that isn't a fast-forward.
             shas += git("rev-list", local_sha, "--not", "--remotes").split()
         else:
             shas += git("rev-list", "%s..%s" % (remote_sha, local_sha)).split()
