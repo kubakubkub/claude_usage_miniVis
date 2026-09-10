@@ -14,11 +14,17 @@ Appearance (right-click -> Appearance...):
   Opacity     25%-100% slider
   Ghost mode  drops the panel entirely -- only the figure and text remain
 
+Run estimate (right-click -> Estimate for), once usage_learn.py has a model:
+  a faint band above the fill shows where a typical run of the chosen type
+  would take the 5-hour window, a thin mark where a bad one would, and one
+  line of text says whether it fits -- or warns to wait for the reset.
+
 Uses Tkinter only (Python standard library) -- no pystray, no Pillow -- so it
 runs anywhere Python has Tk, including macOS and Linux.
 
-Reads only the local mirror file written by statusline.py. No network calls,
-no credentials, no API key. Costs nothing to run.
+Reads only local files: the mirror written by statusline.py and the model
+written by usage_learn.py. No network calls, no credentials, no API key.
+Costs nothing to run.
 
 Windows:  pythonw.exe overlay.pyw
 macOS:    python3 overlay.pyw
@@ -62,6 +68,8 @@ class Overlay:
         self.style = core.get_style(self.cfg)
         self.scale = core.get_scale(self.cfg)
         self.ghost = core.get_ghost(self.cfg)
+        self.estimate_for = core.get_estimate_for(self.cfg)
+        self._positioned = False  # until then there's no real position to re-clamp
         self._ghost_ok = True     # does this platform support -transparentcolor?
         self._settings = None
         self._apply_job = None
@@ -201,6 +209,7 @@ class Overlay:
             self.lbl_sub = tk.Label(self.frame, text="", bg=bg, fg=FG_DIM,
                                     font=(FONT, self._f(8)), justify="left")
             self.lbl_sub.pack(anchor="w")
+            run_parent = self.frame
         else:
             row = tk.Frame(self.frame, bg=bg)
             row.pack(fill="both", expand=True)
@@ -216,6 +225,13 @@ class Overlay:
             self.lbl_sub = tk.Label(text, text="", bg=bg, fg=FG_DIM,
                                     font=(FONT, self._f(8)), justify="left")
             self.lbl_sub.pack(anchor="w")
+            run_parent = text
+
+        # The run estimate line. refresh() packs it only when there's something
+        # to say, so without a model the widget looks exactly as before.
+        self.lbl_run = tk.Label(run_parent, text="", bg=bg, fg=FG_DIM,
+                                font=(FONT, self._f(8)), justify="left")
+        self._run_shown = False
 
         self._bind_events()
         self._last_key = None  # force a redraw into the new widgets
@@ -243,6 +259,11 @@ class Overlay:
                                    variable=self._style_var,
                                    command=lambda s=s: self.set_style(s))
         self.menu.add_cascade(label="Style", menu=styles)
+
+        self._estimate_var = tk.StringVar(value=self.estimate_for)
+        self._estimate_menu = tk.Menu(self.menu, tearoff=0, postcommand=self._fill_estimate_menu)
+        self._fill_estimate_menu()
+        self.menu.add_cascade(label="Estimate for", menu=self._estimate_menu)
 
         self._ghost_var = tk.BooleanVar(value=self.ghost)
         self.menu.add_checkbutton(label="Ghost mode", variable=self._ghost_var,
@@ -291,6 +312,7 @@ class Overlay:
             x, y = max(0, self.root.winfo_screenwidth() - w - 24), 24
         x, y = self._clamp(x, y)
         self.root.geometry("+%d+%d" % (x, y))
+        self._positioned = True
 
     def _clamp(self, x, y):
         """Keep the widget fully on screen even if the display layout changed."""
@@ -399,6 +421,27 @@ class Overlay:
         self.cfg = core.load_config()
         self._apply_alpha()
 
+    def set_estimate_for(self, group):
+        self.estimate_for = core.set_estimate_for(group)
+        self.cfg = core.load_config()
+        self._estimate_var.set(self.estimate_for)
+        self.refresh()
+
+    def _fill_estimate_menu(self):
+        """Rebuilt whenever it opens: the run types are whatever the learner has
+        seen so far, which grows over time."""
+        menu = self._estimate_menu
+        menu.delete(0, "end")
+        groups = core.run_types(core.load_model())
+        if self.estimate_for not in groups and self.estimate_for != core.ESTIMATE_OFF:
+            groups.append(self.estimate_for)  # keep the saved choice visible before it has data
+        for group in groups:
+            menu.add_radiobutton(label=group, value=group, variable=self._estimate_var,
+                                 command=lambda g=group: self.set_estimate_for(g))
+        menu.add_separator()
+        menu.add_radiobutton(label="Off", value=core.ESTIMATE_OFF, variable=self._estimate_var,
+                             command=lambda: self.set_estimate_for(core.ESTIMATE_OFF))
+
     def _debounced(self, fn, *args):
         """Sliders fire on every pixel; rebuilding that often is wasteful."""
         if self._apply_job is not None:
@@ -480,15 +523,17 @@ class Overlay:
     def _line_width(self):
         return max(2, int(round(3 * self.scale)))
 
-    def _draw_bucket(self, pct, colour):
-        utk.draw_bucket(self.canvas, self.graphic, pct, colour, self._line_width())
+    def _draw_bucket(self, pct, colour, projection=None):
+        utk.draw_bucket(self.canvas, self.graphic, pct, colour, self._line_width(),
+                        projection=projection)
 
-    def _draw_pie(self, pct, colour):
+    def _draw_pie(self, pct, colour, projection=None):
         # Ghost mode drops the track ring so only the used arc floats there.
         utk.draw_pie(self.canvas, self.graphic, pct, colour,
                      hole_bg=self.panel_bg,
                      show_track=not (self.ghost and self._ghost_ok),
-                     track=TRACK, line_width=self._line_width())
+                     track=TRACK, line_width=self._line_width(),
+                     projection=projection)
 
     # ---------- refresh ----------
 
@@ -509,18 +554,35 @@ class Overlay:
         else:
             sub = "no data\nClaude Code not running?"
 
-        key = (pct_text, sub, colour, self.style, self.ghost, self.scale)
+        est = None
+        if self.estimate_for != core.ESTIMATE_OFF:
+            est = core.estimate_run(state, core.load_model(), self.estimate_for)
+        run_text = core.estimate_text(est) if est else ""
+        run_colour = core.to_hex(core.verdict_color(est["verdict"])) if est else FG_DIM
+        projection = None
+        if est and est["five_typical"] is not None and state.five_pct is not None:
+            # Rounded so a tiny model update doesn't force a redraw every poll.
+            projection = (round(state.five_pct + est["five_typical"], 1),
+                          round(state.five_pct + est["five_worst"], 1))
+
+        key = (pct_text, sub, colour, run_text, run_colour, projection,
+               self.style, self.ghost, self.scale)
         if key == self._last_key:
             return
         self._last_key = key
 
         ghosting = self.ghost and self._ghost_ok
+        figure_projection = None
+        if projection:
+            # The band is the usage colour faded into the background, so it reads
+            # as "not used yet"; the worst-case mark takes the verdict colour.
+            figure_projection = projection + (utk.blend(colour, self.panel_bg, 0.55), run_colour)
 
         if self.style == "badge":
             # Normally the whole tile carries the colour. Ghosting has no tile,
             # so the number itself becomes the coloured element.
             bg = self.panel_bg if ghosting else colour
-            for w in (self.frame, self.lbl_pct, self.lbl_sub, self.lbl_head):
+            for w in (self.frame, self.lbl_pct, self.lbl_sub, self.lbl_head, self.lbl_run):
                 try:
                     w.configure(bg=bg)
                 except Exception:
@@ -528,16 +590,31 @@ class Overlay:
             self.lbl_pct.configure(fg=colour if ghosting else FG_MAIN)
             self.lbl_head.configure(fg=FG_HEAD if ghosting else FG_HEAD_ON_COLOUR)
             self.lbl_sub.configure(fg=FG_GHOST_SUB if ghosting else FG_DIM)
+            # A coloured verdict on the coloured tile would vanish; there the
+            # symbol at the start of the line carries it.
+            self.lbl_run.configure(fg=run_colour if ghosting else FG_MAIN)
         else:
             if self.style == "bucket":
-                self._draw_bucket(state.five_pct, colour)
+                self._draw_bucket(state.five_pct, colour, figure_projection)
             else:
-                self._draw_pie(state.five_pct, colour)
+                self._draw_pie(state.five_pct, colour, figure_projection)
             self.lbl_pct.configure(fg=colour)
             self.lbl_sub.configure(fg=FG_GHOST_SUB if ghosting else FG_DIM)
+            self.lbl_run.configure(fg=run_colour)
 
         self.lbl_pct.configure(text=pct_text)
         self.lbl_sub.configure(text=sub)
+        warn = est is not None and est["verdict"] != core.FITS
+        self.lbl_run.configure(text=run_text, font=(FONT, self._f(8), "bold" if warn else "normal"))
+        if bool(run_text) != self._run_shown:
+            if run_text:
+                self.lbl_run.pack(anchor="w")
+            else:
+                self.lbl_run.pack_forget()
+            self._run_shown = bool(run_text)
+            if self._positioned:
+                # One line more or less; keep the widget on screen.
+                self.root.after_idle(self._reclamp)
 
     def _tick(self):
         try:
@@ -548,6 +625,8 @@ class Overlay:
             elif core.get_ghost(cfg) != self.ghost:
                 self.set_ghost(core.get_ghost(cfg))
             else:
+                self.estimate_for = core.get_estimate_for(cfg)
+                self._estimate_var.set(self.estimate_for)
                 self.refresh()
         except Exception:
             pass  # A bad poll must never kill the overlay.

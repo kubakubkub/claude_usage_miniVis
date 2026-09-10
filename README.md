@@ -5,9 +5,13 @@
 ![presets](screenshots/presets.png)
 
 Shows the **real** numbers — the `rate_limits` Claude Code already sends to your
-status line, the same figures your account reports. No token-cost estimation, no
-API key, no credentials, no scraping, no network calls of any kind. It reads one
-local file and draws a percentage. Zero tokens.
+status line, the same figures your account reports. No API key, no credentials,
+no scraping, no network calls of any kind. Zero tokens: everything it shows or
+learns comes from files already on your disk.
+
+It also learns what your Workflow runs and subagents typically take out of your
+limits, and tells you whether one still fits before the reset. See
+[Will this run fit?](#will-this-run-fit).
 
 Small on purpose. This is not a dashboard: it answers "is it worth kicking off
 this big refactor now, or should I wait for the reset?" and nothing else. The
@@ -16,12 +20,14 @@ detail lives in your terminal status line; this is the ambient version.
 - **`tray.pyw`** — system-tray / menu-bar icon
 - **`overlay.pyw`** — always-on-top badge floating on the desktop
 - **`chooser.pyw`** — preview the presets, then start either one
+- **`windows\usage-report.bat`** / **`macos/Usage-Report.command`** — what past
+  runs cost, and whether one fits now
 
 ## Status
 
 | | |
 |---|---|
-| Claude Code | verified against **v2.1.220** |
+| Claude Code | verified against **v2.1.267** |
 | Windows 11 | developed and tested |
 | macOS 26, Apple silicon | statusline + tray **verified**; overlay/chooser Windows-only in practice |
 | Linux | **written, not yet verified** |
@@ -43,8 +49,9 @@ welcome.
 ## Requires Claude Code
 
 **Install [Claude Code](https://claude.com/claude-code) first, and sign in with a
-Pro or Max subscription.** This tool has no data of its own — it only mirrors
-what Claude Code hands to its status line, so there is nothing to show until
+Pro or Max subscription.** This tool has no data of its own — it only uses what
+Claude Code produces on your machine: the data it hands to its status line, and,
+for run estimates, its session transcripts. There is nothing to show until
 Claude Code is installed, authenticated and has run at least once.
 
 On an API-key login there are no `rate_limits` at all (that billing has no
@@ -63,13 +70,20 @@ claude.ai/settings/usage — but the *numbers* come from Claude Code.
 ## How it works
 
 ```
-Claude Code ──stdin JSON──> statusline.py ──> ~/.claude/usage-mirror.json ──┬─> tray.pyw
-                                 │                                          └─> overlay.pyw
-                                 └──> one-line status in the Claude Code UI
+Claude Code ──stdin JSON──> statusline.py ──┬─> ~/.claude/usage-mirror.json ──┬─> tray.pyw
+                                            │                                 └─> overlay.pyw
+                                            ├─> ~/.claude/usage-history.jsonl
+                                            ├─> one-line status in the Claude Code UI
+                                            └─> starts usage_learn.py (at most every 30 min)
+
+usage-history.jsonl + Claude Code transcripts ──> usage_learn.py ──> ~/.claude/usage-model.json
+                                                                       ├─> overlay.pyw (run estimate)
+                                                                       └─> the usage report
 ```
 
 Fully decoupled: the visualizers never talk to Claude Code, and the statusline
-never knows they exist. Any piece can be restarted independently, and you can
+never knows they exist; the learner runs in the background and never holds up a
+render. Any piece can be restarted independently, and you can
 run the tray, the overlay, both, or neither.
 
 The mirror stores **only** what gets displayed — the rate limits, model name,
@@ -79,9 +93,31 @@ is needed to draw a percentage, and the mirror is exactly the file you'd attach
 to a bug report. Pass `--full` in the statusLine command if you want everything
 captured for debugging.
 
+### Usage history
+
+Whenever a limit window rises or resets, `statusline.py` also appends one line
+to `~/.claude/usage-history.jsonl`:
+
+```
+{"t":1789049709.9,"5h":23,"5h_reset":1789065600,"7d":12,"7d_reset":1789506000}
+```
+
+The mirror only ever holds the latest value; the history shows how fast the
+numbers move, and it's what [the learner](#will-this-run-fit) works from.
+
+Every open Claude Code session renders its own status line from its own last
+API response, so an idle session keeps reporting an older, lower number. Usage
+can't go down inside a window, so a lower reading is treated as stale and never
+logged. Without that, the history flickers between sessions.
+
+Same rules as the mirror: timestamps and percentages only, no session, path or
+cost data. The learner drops lines older than six weeks; as a backstop, past
+1 MB the file rolls over to `usage-history.1.jsonl`.
+
 ## Verified payload shape
 
-Confirmed live against Claude Code **v2.1.220** (not assumed):
+Confirmed live against Claude Code **v2.1.220** and again on **v2.1.267** (not
+assumed):
 
 ```
 rate_limits.five_hour.used_percentage    e.g. 58
@@ -152,8 +188,8 @@ backup.
 
 ### macOS
 
-On macOS you get the **statusline**, the **menu-bar icon** and the terminal
-`status` readout. The draggable overlay badge and the chooser are effectively
+On macOS you get the **statusline**, the **menu-bar icon**, the terminal
+`status` readout and the [usage report](#will-this-run-fit). The draggable overlay badge and the chooser are effectively
 **Windows-only** — they are Tk windows, and Tk cannot draw on Apple's system
 Python (see [macOS notes](#macos-notes)). Nothing here needs them.
 
@@ -165,6 +201,7 @@ Open the **`macos`** folder and double-click, in this order:
 | `Install-Statusline.command` | wire the statusline into Claude Code |
 | `Start-Tray.command` | menu-bar icon |
 | `Status.command` | what's running + the current numbers |
+| `Usage-Report.command` | what past runs cost, and whether one fits now |
 | `Stop.command` | stop the tray |
 
 They exist because Finder will not run a bare `.sh` — each is a two-line wrapper
@@ -176,6 +213,7 @@ macos/claude-usage.sh setup      # venv + deps
 macos/claude-usage.sh install    # wire up settings.json (backs up first)
 macos/claude-usage.sh tray       # menu-bar icon
 macos/claude-usage.sh status     # what's running + current numbers
+macos/claude-usage.sh report     # what runs cost, and whether one fits now
 macos/claude-usage.sh stop
 ```
 
@@ -288,6 +326,7 @@ Everything here lives in the **`windows`** folder.
 | `stop-tray.bat` | stop it |
 | `start-overlay.bat` | floating desktop badge |
 | `stop-overlay.bat` | stop it |
+| `usage-report.bat` | what past runs cost, and whether one fits now |
 
 The launchers refuse to double-start, and point you at `setup.bat` if the venv
 is missing. They resolve the venv and the `.pyw` files one level up, so they
@@ -364,8 +403,24 @@ reset times underneath.
 
 - **Drag** it anywhere — the position is saved
 - **Double-click** opens the usage page
-- **Right-click** for: open usage page, style, ghost mode, appearance, reset
-  position, quit
+- **Right-click** for: open usage page, style, estimate for, ghost mode,
+  appearance, reset position, quit
+
+### Run estimate
+
+Once [the learner](#will-this-run-fit) has a model, the overlay shows whether a
+run of the type picked under **Right-click → Estimate for** (a Workflow run, a
+reviewer agent, ...) still fits:
+
+- **bucket / pie:** a faint band above the fill shows where a typical run would
+  take the 5-hour window, and a thin mark where a bad one would
+- **one text line** under the reset times, in every style:
+  `✓ workflow ~16% fits` (green), `⚠ workflow 16-47% tight` (amber), or
+  `⚠ workflow: wait for 20:40` (red), which means don't start a multi-agent
+  job now
+
+There's no line while the numbers are stale or nothing has been learned yet, and
+**Off** hides it. The screenshots above were taken before this line existed.
 
 ### Appearance
 
@@ -444,13 +499,79 @@ Format adapts to distance: `14:10` today, `Tue 23:00` within the week,
 > length." A 7-day window sitting at 82h left is normal — it started ~3.6 days
 > ago.
 
+## Will this run fit?
+
+Before starting a review or a long Workflow run, double-click
+**`windows\usage-report.bat`**, or **`macos/Usage-Report.command`** on a Mac
+(`macos/claude-usage.sh report` from a terminal):
+
+```
+1% of each limit is about:
+  5-hour  $1.24   from 14% seen in 1 window, low confidence
+  7-day   $16.7   from 14% seen in 1 window, low confidence
+
+Finished runs                      count   typical    worst   5h worst   7d worst
+  workflow                             14     $19.3    $58.4        47%       3.5%
+    release-review                      3     $19.0    $58.4
+  agent: reviewer                      22     $3.21    $13.2        11%       0.8%
+
+Right now: 5h 39% (resets 20:40), 7d 14% (resets Tue 23:00)
+  workflow        5h fits (typical 16%, worst 47%, 61% left); 7d fits (typical 1.2%, worst 3.5%, 86% left)
+  agent: reviewer 5h fits (typical 2.6%, worst 11%, 61% left); 7d fits (typical 0.2%, worst 0.8%, 86% left)
+```
+
+The overlay shows the same verdict at a glance; see [Run estimate](#run-estimate).
+
+**It costs nothing to run.** `usage_learn.py` reads files already on your disk,
+the usage history above and Claude Code's own session transcripts, and does
+arithmetic. No Claude calls, no network, zero tokens.
+
+- **What a run cost is exact.** Every response in `~/.claude/projects` records
+  its tokens and model. A Workflow run's agents are stored together, and
+  subagents started by other subagents count towards the run above them.
+- **What 1% is has to be learned.** Anthropic doesn't publish how tokens turn
+  into percent, so the learner watches the history: whenever a window rises,
+  it adds up what was spent in that stretch. The `$` is only a yardstick:
+  tokens at Claude API list price, so output, cache reads and different models
+  share one scale. It's not a bill.
+- **Typical** is the median run, **worst** the 90th percentile. `fits` means
+  even the worst case fits in what's left, `tight` means a typical run fits but
+  a bad one wouldn't, `likely cut off` means a typical one doesn't.
+
+It keeps itself up to date: `statusline.py` starts it in the background at most
+every 30 minutes, without waiting for it, and it writes
+`~/.claude/usage-model.json`. Measurements are kept there for six weeks, so they
+survive Claude Code deleting transcripts after 30 days.
+
+Worth knowing:
+
+- **It starts rough.** The 5-hour rate needs several windows before it reports
+  `ok confidence`, the 7-day rate a few weeks. Until then, read it as a ballpark.
+- **It only sees this machine.** Usage on claude.ai, your phone or another
+  computer counts towards your limits but leaves no transcripts here, which
+  makes runs look cheaper than they are. The report shows any rise it couldn't
+  explain.
+- **A run costs what it's pointed at.** Reviewing a big diff costs more than a
+  small one; the gap between typical and worst is the honest answer.
+- **The 7-day window** is assumed to start from 0% seven days before its reset,
+  which matched real snapshots four weeks apart. The 5-hour window didn't, so
+  it's only ever measured between two sightings.
+- **`usage-model.json` holds Workflow names and project folder names.** Unlike
+  the mirror, it's not a file to attach to a public bug report.
+- **Verified on Windows so far.** The history and the learner are plain Python
+  with no platform code, but they haven't been run on macOS or Linux yet.
+
 ## Files
 
 Shared, in the repo root — the actual program, one copy for both platforms:
 
 | File | Purpose |
 |------|---------|
-| `statusline.py` | Claude Code statusLine: mirrors payload, prints status line |
+| `statusline.py` | Claude Code statusLine: mirrors payload, logs history, starts the learner |
+| `usage_learn.py` | Learns rates and run costs from history + transcripts; prints the report |
+| `check_private.py` | Privacy check: blocks pushing keys, emails, local paths, private terms |
+| `.githooks/pre-push` | Runs that check on every push, once enabled |
+| `CLAUDE.md` | Rules for Claude Code working in this repo, privacy first |
 | `usage_core.py` | Shared reading/formatting/colour/style logic |
 | `usage_tk.py` | Shared Tk canvas drawing (overlay + chooser previews) |
 | `tray.pyw` | Tray / menu-bar icon (pystray + Pillow) |
@@ -468,8 +589,9 @@ Platform launchers — thin, and the only files that differ per OS:
 | `windows\choose.bat` | Double-click to open the chooser |
 | `windows\start/stop-*.bat` | Start/stop the tray and overlay |
 | `windows\make-startup-shortcut.ps1` | Creates/removes the Startup shortcut |
+| `windows\usage-report.bat` | Double-click for the usage report |
 | `macos/claude-usage.sh` | The real macOS/Linux launcher for everything |
-| `macos/*.command` | Double-clickable Finder wrappers (tray + statusline only) |
+| `macos/*.command` | Double-clickable Finder wrappers (tray, statusline, report) |
 
 ## If the schema changes after an upgrade
 
@@ -478,14 +600,60 @@ renders into `probe-dump.jsonl`, inspect it, then re-run the installer
 (`windows\install-statusline.bat` or `macos/Install-Statusline.command`)
 to switch back. The probe writes a dump and nothing else.
 
+## Security
+
+- **Nothing to break into from outside.** No server, no open port, no network
+  calls: there is nothing another computer can connect to.
+- **Untrusted text stays text.** Transcripts can contain text from anywhere
+  (repositories, web pages, agent descriptions). The learner only parses them as
+  JSON and adds up numbers, and names shown on the overlay are plain labels.
+  Nothing from them is run, used as a command, or turned into a file path.
+- **Code here runs automatically, so guard this folder.** Claude Code runs
+  `statusline.py` on every render, which starts `usage_learn.py` in the
+  background, and the pre-push hook runs on every push. Anyone who can change
+  files in this folder, or a malicious change you pull or merge, gets code
+  running as you. Read diffs before pulling, and don't install from a fork you
+  haven't looked at.
+- **Local data files.** `~/.claude/usage-model.json` names your Workflow runs
+  and project folders. Only programs running as you can read it, and those
+  could read the transcripts it's built from anyway.
+
+## Contributing: the privacy check
+
+This repo is public, and the tool works next to very private data (Claude Code
+transcripts, credentials). Before anything is pushed, `check_private.py` makes
+sure none of it comes along. It checks every unpushed commit's message, identity
+and added lines, plus the working tree, for:
+
+- API keys, tokens, private keys and passwords
+- email addresses (GitHub / Anthropic noreply are fine) and home-directory paths
+- your OS user name and a personal git email, found automatically
+- anything you list in `.private-terms` (your name, other projects' names), a
+  gitignored file, because the list of what to keep private is private too
+- files that must never be committed: credentials, local Claude Code settings,
+  and this tool's own data files
+
+Enable it once per clone, and it blocks any push that fails:
+
+```
+git config core.hooksPath .githooks
+python check_private.py        # run by hand any time
+```
+
+It can't read text inside images, so look at screenshots yourself before
+committing them. Ghost-mode captures in particular show whatever was on the
+desktop behind the widget.
+
 ## Notes
 
 - `ANTHROPIC_API_KEY` is never read or set by any file here. Setting it would
   reroute Claude Code to paid API billing and blank out `rate_limits` entirely.
 - `statusline.py` cannot crash the status line: every failure path degrades to
   a plain string, and a traceback is never printed to stdout.
-- Mirror and settings writes are atomic (temp file + `os.replace`), so nothing
-  can read or leave a half-written file.
+- Mirror, model and settings writes are atomic (temp file + `os.replace`), so
+  nothing can read or leave a half-written file.
+- `statusline.py` never waits for the learner: it starts it detached, with no
+  shared console or output, so a render takes as long as it did before.
 - On Windows, one running visualizer shows as **two** `pythonw.exe` processes.
   That's normal — the venv's `pythonw.exe` is a redirector stub that runs the
   base interpreter as a child. There's still only one icon.

@@ -9,6 +9,7 @@
 #   ./claude-usage.sh tray       start the menu-bar / tray icon
 #   ./claude-usage.sh stop       stop both
 #   ./claude-usage.sh status     show what's running and the current numbers
+#   ./claude-usage.sh report     what past runs cost, and whether one fits now
 #
 # Reads only the local mirror file. No network calls, no credentials.
 
@@ -127,8 +128,9 @@ s = core.read_state()
 print(core.build_tooltip(s))
 "
     ;;
+  report)    need_venv; "$PY" "$ROOT/usage_learn.py" ;;
   *)
-    sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

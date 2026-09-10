@@ -44,4 +44,9 @@ How to keep it that way:
 - Files under `~/.claude` hold only what's needed: the mirror and history carry
   no session ids, paths or cost data.
 - Writes are atomic (temp file + `os.replace`).
-- Windows is the verified platform; macOS/Linux paths exist but are unverified.
+- Windows is the main platform. On macOS the statusline and tray are verified;
+  the overlay and chooser are Windows-only in practice (Tk on Apple's Python
+  can't draw). The history and learner are only verified on Windows. Linux is
+  unverified.
+- Launchers live in `windows\` and `macos/` and resolve the repo one folder up;
+  the Python files and the single `.venv` stay in the repo root.

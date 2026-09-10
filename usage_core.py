@@ -336,3 +336,122 @@ def build_tooltip(state: UsageState) -> str:
         lines.append(state.model)
 
     return "\n".join(lines)
+
+
+# --- run estimates (from usage_learn.py's model) -------------------------------
+
+MODEL_NAME = "usage-model.json"
+ESTIMATE_OFF = "off"
+DEFAULT_ESTIMATE_FOR = "workflow"
+FITS, TIGHT, CUT_OFF = "fits", "tight", "likely cut off"
+VERDICT_COLORS = {FITS: COLOR_OK, TIGHT: COLOR_WARN, CUT_OFF: COLOR_CRIT}
+VERDICT_RANK = {FITS: 0, TIGHT: 1, CUT_OFF: 2}
+
+
+def model_path() -> str:
+    return os.path.join(claude_dir(), MODEL_NAME)
+
+
+def load_model() -> dict:
+    """What usage_learn.py has learned, or {} if nothing yet. Never raises."""
+    try:
+        with open(model_path(), "r", encoding="utf-8") as fh:
+            model = json.load(fh)
+    except Exception:
+        return {}
+    return model if isinstance(model, dict) else {}
+
+
+def run_types(model) -> list:
+    """Run types the model has costs for: 'workflow' first, then most frequent."""
+    costs = model.get("run_costs") if isinstance(model, dict) else None
+    if not isinstance(costs, dict):
+        return []
+    return sorted((group for group, stats in costs.items() if isinstance(stats, dict)),
+                  key=lambda group: (group != "workflow", -(as_ts(costs[group].get("n")) or 0), group))
+
+
+def get_estimate_for(cfg=None) -> str:
+    """Run type the visualizers estimate for, or ESTIMATE_OFF."""
+    if cfg is None:
+        cfg = load_config()
+    value = cfg.get("estimate_for")
+    return value if isinstance(value, str) and value else DEFAULT_ESTIMATE_FOR
+
+
+def set_estimate_for(value: str) -> str:
+    cfg = load_config()
+    cfg["estimate_for"] = value
+    save_config(cfg)
+    return value
+
+
+def fit(typical: float, worst: float, left: float) -> str:
+    """FITS: even a bad run fits in what's left. TIGHT: a typical one does, a
+    bad one wouldn't. CUT_OFF: not even a typical one does."""
+    if worst <= left:
+        return FITS
+    return TIGHT if typical <= left else CUT_OFF
+
+
+def estimate_run(state: UsageState, model: dict, group: str):
+    """How a run of `group` would land on current usage, as a dict, or None
+    when there's nothing honest to say: stale or missing numbers, no learned
+    rate, or no finished runs of that type yet.
+
+    The verdict comes from whichever window is worse off. five_typical and
+    five_worst are the 5-hour shares for drawing on the figure (None when the
+    5-hour rate isn't learned yet).
+    """
+    if state.stale or not state.has_limits or not group or group == ESTIMATE_OFF:
+        return None
+    stats = dig(model, "run_costs", group)
+    if not isinstance(stats, dict):
+        return None
+    median, p90 = as_ts(stats.get("median_usd")), as_ts(stats.get("p90_usd"))
+    if median is None or p90 is None:
+        return None
+
+    windows = []
+    for key, used, reset in (("5h", state.five_pct, state.five_reset),
+                             ("7d", state.seven_pct, state.seven_reset)):
+        per = as_ts(dig(model, "rates", key, "usd_per_pct"))
+        if not per or per <= 0 or used is None:
+            continue
+        typical, worst = median / per, p90 / per
+        windows.append({"window": key, "typical": typical, "worst": worst, "reset": reset,
+                        "verdict": fit(typical, worst, 100 - used)})
+    if not windows:
+        return None
+
+    limiting = max(windows, key=lambda w: (VERDICT_RANK[w["verdict"]], w["typical"]))
+    five = next((w for w in windows if w["window"] == "5h"), None)
+    return {
+        "group": group,
+        "label": group.split(": ", 1)[-1][:14],
+        "verdict": limiting["verdict"],
+        "window": limiting["window"],
+        "typical": limiting["typical"],
+        "worst": limiting["worst"],
+        "reset": limiting["reset"],
+        "five_typical": five["typical"] if five else None,
+        "five_worst": five["worst"] if five else None,
+    }
+
+
+def verdict_color(verdict):
+    return VERDICT_COLORS.get(verdict, COLOR_STALE)
+
+
+def estimate_text(est) -> str:
+    """One short line: '✓ workflow ~16% fits', '⚠ workflow 16-47% tight',
+    '⚠ workflow: wait for 20:40'. The symbol carries the verdict wherever the
+    colour can't (e.g. on the coloured badge tile)."""
+    def share(value):
+        return "<1%" if value < 1 else "%d%%" % round(value)
+
+    if est["verdict"] == CUT_OFF:
+        return "⚠ %s: wait for %s" % (est["label"], fmt_clock(est["reset"]))
+    if est["verdict"] == TIGHT:
+        return "⚠ %s %s-%s tight" % (est["label"], share(est["typical"]).rstrip("%"), share(est["worst"]))
+    return "✓ %s ~%s fits" % (est["label"], share(est["typical"]))
