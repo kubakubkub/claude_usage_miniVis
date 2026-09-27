@@ -1,7 +1,7 @@
 # claude_usage_miniVis
 
 Local visualizer and estimator for Claude Code subscription rate limits. See
-README.md for what each file does.
+README.md for users and docs/details.md for how it works and what each file does.
 
 ## This repo is public: check for private data before every commit and push
 
