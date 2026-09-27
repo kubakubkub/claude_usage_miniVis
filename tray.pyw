@@ -2,10 +2,12 @@
 
 Reads the local mirror file written by statusline.py every 5 seconds and
 renders the 5-hour usage percentage as the tray icon. Tooltip shows both the
-5-hour and 7-day windows plus time until each resets.
+5-hour and 7-day windows plus time until each resets, where the recent pace is
+heading, and whether a run of the type picked in the overlay would fit.
 
-This process makes no network calls and reads no credentials. Its only input is
-the local mirror file. It costs nothing to run -- it is a passive visualizer.
+This process makes no network calls and reads no credentials. Its only inputs
+are local files: the mirror, the usage history and the learned model. It costs
+nothing to run -- it is a passive visualizer.
 
 Windows:  pythonw.exe tray.pyw
 macOS:    python3 tray.pyw     (needs pyobjc; see requirements.txt)
@@ -298,9 +300,17 @@ class TrayApp:
             except Exception:
                 pass
         try:
-            self.icon.title = core.build_tooltip(state)[:TOOLTIP_MAX]
+            # Same run type as the overlay's "Estimate for", from the shared config.
+            group = core.get_estimate_for(cfg)
+            est = None
+            if group != core.ESTIMATE_OFF:
+                est = core.estimate_run(state, core.load_model(), group)
+            self.icon.title = core.build_tooltip(state, est, core.pace(state), limit=TOOLTIP_MAX)
         except Exception:
-            pass
+            try:
+                self.icon.title = core.build_tooltip(state)[:TOOLTIP_MAX]
+            except Exception:
+                pass
 
     def _loop(self, icon) -> None:
         icon.visible = True

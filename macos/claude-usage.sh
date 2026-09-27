@@ -125,7 +125,9 @@ case "${1:-}" in
 import sys; sys.path.insert(0, '$ROOT')
 import usage_core as core
 s = core.read_state()
-print(core.build_tooltip(s))
+group = core.get_estimate_for()
+est = None if group == core.ESTIMATE_OFF else core.estimate_run(s, core.load_model(), group)
+print(core.build_tooltip(s, est, core.pace(s)))
 "
     ;;
   report)    need_venv; "$PY" "$ROOT/usage_learn.py" ;;

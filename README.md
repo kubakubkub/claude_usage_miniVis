@@ -403,8 +403,28 @@ reset times underneath.
 
 - **Drag** it anywhere — the position is saved
 - **Double-click** opens the usage page
+- **Hover** for the full picture: both windows with countdowns, the pace, the
+  run estimate, when the numbers were last reported, and the model
+- **The arrow** top-right folds it down to one line — label, percentage, and a
+  ⚠ when the run estimate or the pace says trouble — and back out. The right
+  edge stays put, so the arrow doesn't move away from the pointer. Remembered
+  across restarts.
 - **Right-click** for: open usage page, style, estimate for, ghost mode,
-  appearance, reset position, quit
+  folded, appearance, reset position, quit
+
+### Pace
+
+From the [usage history](#usage-history), how fast the 5-hour window has been
+filling over the last hour. When that pace would hit 100% before the reset, the
+overlay adds a line — `↗ full ~15:20` — and the tray tooltip says the same.
+Otherwise it stays quiet on the widget and shows `Pace +5%/h: lasts to reset`
+in the hover text. There's no pace unless you're actually working: usage has to
+have risen within the last 15 minutes, by at least 2 points over at least 10.
+Zero tokens, like everything else here.
+
+The tray tooltip also carries the run estimate for whatever type the overlay
+is set to estimate for. Windows caps tray tooltips at 127 characters, so the
+least useful lines (model, header) are dropped first when it's full.
 
 ### Run estimate
 
@@ -472,14 +492,29 @@ to the same red. Anchor points (`COLOR_STOPS` in `usage_core.py`):
 | 75% | orange | `#db6d28` |
 | 90% | red | `#da3633` |
 | 100% | dark red | `#7c1016` |
-| stale / unknown | grey | `#6e6e6e` |
+| stale | its colour, faded halfway to grey | e.g. 62% `#a2794a` |
+| unknown | grey | `#6e6e6e` |
 
 Everything between is interpolated: 93% `#c72e2d`, 95% `#ab2324`, 98% `#8f181c`.
 Edit `COLOR_STOPS` to reshape the ramp; both visualizers follow it.
 
-"Stale" = the mirror file is older than 10 minutes, i.e. Claude Code hasn't
-rendered a status line recently. The last known numbers stay visible, greyed
-and marked `STALE`, rather than vanishing.
+"Stale" = no session has reported rate limits for 10 minutes. The last known
+numbers stay visible with their colour faded and an `as of 25m ago` line,
+rather than vanishing. Usage only rises while you use Claude, so an idle
+reading is usually still right; the fade says "old" without hiding how full
+the window was. Run estimates are withheld while stale. A
+session that was just `/clear`ed, or hasn't made its first call yet, reports no
+limits at all, and an idle one reports its older, lower number; neither
+replaces the numbers in the mirror.
+
+Once a window's reset time passes, its old number is known to be gone, so it
+shows **0%, new window** until Claude Code reports the next one. That's a floor:
+use on claude.ai counts against the same limits and isn't visible here.
+
+There is no zero-token way to refresh the numbers without Claude Code. The
+limits only arrive with an API response, and asking the usage endpoint
+directly would take your credentials and a network call, which this tool
+deliberately never does.
 
 ## Reset times
 

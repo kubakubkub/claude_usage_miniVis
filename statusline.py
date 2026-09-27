@@ -13,7 +13,9 @@ Hard rules:
     a half-written file.
 
 rate_limits is absent under API-key auth, and absent right after /clear until
-the session's first API response. Both cases degrade to "5h --".
+the session's first API response. Both cases degrade to "5h --" on the line
+itself, but the mirror keeps the last good limits (see keep_best_limits), so
+one quiet session can't blank the visualizers.
 
 Whenever a rate-limit window rises or resets, one line is also appended to
 usage-history.jsonl. The mirror only ever holds the latest value;
@@ -89,16 +91,80 @@ def trim(payload):
     return out
 
 
+def valid_window(window) -> bool:
+    return (isinstance(window, dict)
+            and as_num(window.get("used_percentage")) is not None
+            and as_num(window.get("resets_at")) is not None)
+
+
+def pick_window(new, old):
+    """The better of two readings of one limit window, and whether it's `new`.
+
+    A later window beats an earlier one; within the same window the higher
+    percentage wins, because usage can't go down until the reset. So an idle
+    session repeating its old, lower number never replaces a fresher one.
+    """
+    if not valid_window(new):
+        return (old, False) if valid_window(old) else (None, False)
+    if not valid_window(old):
+        return new, True
+    new_reset, old_reset = as_num(new["resets_at"]), as_num(old["resets_at"])
+    if new_reset > old_reset + RESET_TOLERANCE_SECONDS:
+        return new, True
+    if new_reset < old_reset - RESET_TOLERANCE_SECONDS:
+        return old, False
+    if as_num(new["used_percentage"]) >= as_num(old["used_percentage"]):
+        return new, True
+    return old, False
+
+
+def keep_best_limits(stored, now: float):
+    """Merge this render's rate_limits with the ones already in the mirror.
+
+    Each open session renders from its own last API response, and one that was
+    just /clear'ed -- or hasn't made a call yet -- sends no rate_limits at all.
+    Written as-is, either would blank the visualizers or drag them back to an
+    older number. Returns the time the kept limits were last actually seen.
+    """
+    old, old_at = None, None
+    try:
+        with open(mirror_path(), "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+        old = dig(record, "payload", "rate_limits")
+        old_at = as_num(record.get("limits_at", record.get("captured_at")))
+    except Exception:
+        pass
+    old = old if isinstance(old, dict) else {}
+    new = dig(stored, "rate_limits")
+    new = new if isinstance(new, dict) else {}
+
+    merged, fresh = {}, False
+    for window in ("five_hour", "seven_day"):
+        chosen, is_new = pick_window(new.get(window), old.get(window))
+        if chosen is not None:
+            merged[window] = chosen
+            fresh = fresh or is_new
+    if merged:
+        stored["rate_limits"] = merged
+    return now if fresh else old_at
+
+
 def write_mirror(payload, raw: str, full: bool = False) -> None:
     """Atomically write the payload + capture time. Silent on any failure."""
     path = mirror_path()
+    now = time.time()
     stored = payload if full else trim(payload)
+    # Copied: with --full this is the payload build_line still has to read.
+    stored = dict(stored) if isinstance(stored, dict) else {}
+    limits_at = keep_best_limits(stored, now)
     record = {
-        "captured_at": time.time(),
-        "payload": stored if isinstance(stored, dict) else None,
+        "captured_at": now,
+        "payload": stored,
         "raw_ok": payload is not None,
         "trimmed": not full,
     }
+    if limits_at is not None:
+        record["limits_at"] = limits_at
     if payload is None and full:
         # Keep the unparseable text around; useful if the schema ever changes.
         record["raw"] = raw[:8000]

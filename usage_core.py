@@ -145,6 +145,20 @@ def set_ghost(value) -> bool:
     return bool(value)
 
 
+def get_folded(cfg=None) -> bool:
+    """Overlay folded down to its header line."""
+    if cfg is None:
+        cfg = load_config()
+    return bool(cfg.get("folded", False))
+
+
+def set_folded(value) -> bool:
+    cfg = load_config()
+    cfg["folded"] = bool(value)
+    save_config(cfg)
+    return bool(value)
+
+
 def dig(data, *keys):
     """Nested lookup that returns None instead of raising on any missing link."""
     cur = data
@@ -237,6 +251,8 @@ class UsageState:
         self.seven_pct = None
         self.seven_reset = None
         self.model = None
+        self.five_rolled = False   # reset time has passed; see read_state
+        self.seven_rolled = False
         self.captured_at = None
         self.stale = True
         self.problem = "waiting for Claude Code"
@@ -264,9 +280,12 @@ def read_state() -> UsageState:
         state.problem = "mirror file malformed"
         return state
 
-    state.captured_at = as_ts(record.get("captured_at"))
+    # limits_at is when the numbers were last actually reported; captured_at
+    # only says some session rendered. Older mirrors have just captured_at.
+    state.captured_at = as_ts(record.get("limits_at", record.get("captured_at")))
+    now = time.time()
     if state.captured_at is not None:
-        state.stale = (time.time() - state.captured_at) > STALE_SECONDS
+        state.stale = (now - state.captured_at) > STALE_SECONDS
 
     payload = record.get("payload")
     if not isinstance(payload, dict):
@@ -279,6 +298,16 @@ def read_state() -> UsageState:
     state.seven_pct = as_pct(dig(payload, "rate_limits", "seven_day", "used_percentage"))
     state.seven_reset = as_ts(dig(payload, "rate_limits", "seven_day", "resets_at"))
 
+    # Past its reset, a window's old number is known to be wrong: that usage is
+    # gone. Show 0% until Claude Code reports the new window. That's a floor --
+    # claude.ai use counts too and is invisible here -- but a far better one
+    # than the old high number. It also makes an idle 5h reading fresh again.
+    if state.five_pct is not None and state.five_reset is not None and state.five_reset <= now:
+        state.five_pct, state.five_rolled = 0, True
+        state.stale = False
+    if state.seven_pct is not None and state.seven_reset is not None and state.seven_reset <= now:
+        state.seven_pct, state.seven_rolled = 0, True
+
     if not state.has_limits:
         # Expected under API-key auth, and right after /clear before the first
         # API response of the session.
@@ -290,52 +319,159 @@ def read_state() -> UsageState:
 
 
 def pick_color(pct, stale: bool):
-    """Continuous green -> amber -> orange -> red -> dark red ramp."""
-    if stale or pct is None:
+    """Continuous green -> amber -> orange -> red -> dark red ramp.
+
+    Stale numbers keep their colour, faded halfway to grey. Usage only rises
+    while you use Claude, so an idle reading is usually still right; the fade
+    says "old" without hiding how full the window was.
+    """
+    if pct is None:
         return COLOR_STALE
 
     pct = max(0, min(100, pct))
+    rgb = COLOR_MAX
     lo_at, lo_rgb = COLOR_STOPS[0]
     for hi_at, hi_rgb in COLOR_STOPS[1:]:
         if pct <= hi_at:
             span = hi_at - lo_at
             t = 0.0 if span <= 0 else (pct - lo_at) / float(span)
-            return tuple(int(round(lo_rgb[i] + (hi_rgb[i] - lo_rgb[i]) * t)) for i in range(3))
+            rgb = tuple(int(round(lo_rgb[i] + (hi_rgb[i] - lo_rgb[i]) * t)) for i in range(3))
+            break
         lo_at, lo_rgb = hi_at, hi_rgb
-    return COLOR_MAX
+    if stale:
+        rgb = tuple(int(round((a + b) / 2.0)) for a, b in zip(rgb, COLOR_STALE))
+    return rgb
 
 
 def to_hex(rgb) -> str:
     return "#%02x%02x%02x" % rgb
 
 
-def build_tooltip(state: UsageState) -> str:
-    """Multi-line summary used by the tray tooltip and the overlay hover text."""
-    lines = ["Claude usage"]
+def build_tooltip(state: UsageState, est=None, pace=None, limit=None) -> str:
+    """Multi-line summary used by the tray tooltip, the overlay hover text and
+    `claude-usage.sh status`.
+
+    `limit` caps the length (Windows tray tooltips stop at 127 characters):
+    lines are dropped least important first -- model, header, the "updated"
+    age while fresh -- rather than cutting the text off mid-line.
+    """
+    lines = [(5, "Claude usage")]  # (drop order: higher goes first, text)
     said_problem = False
 
     if state.has_limits:
-        if state.five_pct is not None:
-            lines.append("5h  %d%%   resets %s  (%s)" % (
-                state.five_pct, fmt_clock(state.five_reset), fmt_short(state.five_reset)))
-        if state.seven_pct is not None:
-            lines.append("7d  %d%%   resets %s  (%s)" % (
-                state.seven_pct, fmt_clock(state.seven_reset), fmt_short(state.seven_reset)))
+        if state.five_rolled:
+            lines.append((0, "5h  0%%   reset at %s, new window" % fmt_clock(state.five_reset)))
+        elif state.five_pct is not None:
+            lines.append((0, "5h  %d%%   resets %s  (%s)" % (
+                state.five_pct, fmt_clock(state.five_reset), fmt_short(state.five_reset))))
+        if state.seven_rolled:
+            lines.append((2, "7d  0%%   reset at %s, new window" % fmt_clock(state.seven_reset)))
+        elif state.seven_pct is not None:
+            lines.append((2, "7d  %d%%   resets %s  (%s)" % (
+                state.seven_pct, fmt_clock(state.seven_reset), fmt_short(state.seven_reset))))
     else:
-        lines.append(state.problem or "no usage data")
+        lines.append((0, state.problem or "no usage data"))
         said_problem = True
 
-    # Freshness before model name: the tray tooltip is truncated at 127 chars,
-    # and knowing the data is STALE matters more than knowing the model.
+    if pace:
+        lines.append((3, pace_text(pace, long=True)))
+    if est:
+        lines.append((3, estimate_text(est)))
+
     if state.captured_at is not None:
-        lines.append("Updated %s%s" % (fmt_age(state.captured_at), "  [STALE]" if state.stale else ""))
+        # Knowing the data is old matters more than most of the rest.
+        lines.append((1 if state.stale else 4, "Updated %s%s" % (
+            fmt_age(state.captured_at), "  [STALE]" if state.stale else "")))
     elif state.problem and not said_problem:
-        lines.append(state.problem)
+        lines.append((1, state.problem))
 
     if state.model:
-        lines.append(state.model)
+        lines.append((6, state.model))
 
-    return "\n".join(lines)
+    def joined():
+        return "\n".join(text for _rank, text in lines)
+
+    while limit and len(joined()) > limit and len(lines) > 1:
+        worst = max(range(len(lines)), key=lambda i: (lines[i][0], i))
+        del lines[worst]
+    return joined()[:limit] if limit else joined()
+
+
+# --- pace (from statusline.py's usage-history.jsonl) ------------------------
+
+HISTORY_NAME = "usage-history.jsonl"
+PACE_LOOKBACK = 60 * 60   # judge the pace on the last hour of work
+PACE_IDLE = 15 * 60       # no rise for this long: not working, no pace
+PACE_MIN_SPAN = 10 * 60   # shorter than this is noise
+PACE_MIN_RISE = 2         # percentage points
+_history_cache = {"key": None, "records": []}
+
+
+def history_tail(max_bytes=32768) -> list:
+    """The last few hundred history records, oldest first. Cached on the file's
+    size and mtime, so polling every few seconds costs a stat. Never raises."""
+    path = os.path.join(claude_dir(), HISTORY_NAME)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return []
+    key = (st.st_size, st.st_mtime)
+    if _history_cache["key"] == key:
+        return _history_cache["records"]
+    records = []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - max_bytes))
+            for line in fh.read().decode("utf-8", "replace").splitlines():
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue  # the cut-off first line, or a torn write
+                if isinstance(rec, dict) and as_ts(rec.get("t")) is not None:
+                    records.append(rec)
+    except OSError:
+        return []
+    records.sort(key=lambda r: r["t"])
+    _history_cache.update(key=key, records=records)
+    return records
+
+
+def pace(state: UsageState, records=None, now=None):
+    """Where the 5-hour window is heading at the pace of the last hour.
+
+    None unless there's a real trend to report: you're working right now (a
+    rise in the last 15 minutes) and usage climbed at least 2 points over at
+    least 10 minutes of this window. Otherwise a dict: per_hour (points),
+    full_at (when it would hit 100%) and short (True if that's before the reset).
+    """
+    if state.five_rolled or state.five_pct is None or state.five_reset is None:
+        return None
+    now = time.time() if now is None else now
+    records = history_tail() if records is None else records
+    window = [r for r in records
+              if as_ts(r.get("5h")) is not None
+              and abs((as_ts(r.get("5h_reset")) or 0) - state.five_reset) <= 600
+              and now - PACE_LOOKBACK <= r["t"] <= now]
+    if len(window) < 2 or now - window[-1]["t"] > PACE_IDLE:
+        return None
+    first, last = window[0], window[-1]
+    span, rise = last["t"] - first["t"], last["5h"] - first["5h"]
+    if span < PACE_MIN_SPAN or rise < PACE_MIN_RISE:
+        return None
+    per_sec = rise / float(span)
+    full_at = last["t"] + max(0, 100 - state.five_pct) / per_sec
+    return {"per_hour": per_sec * 3600, "full_at": full_at,
+            "short": full_at < state.five_reset}
+
+
+def pace_text(p, long=False) -> str:
+    """'↗ full ~14:50' when the pace runs out before the reset, else how fast
+    it's going. `long` adds the context the tooltip has room for."""
+    if p["short"]:
+        text = "Pace: full by ~%s" if long else "↗ full ~%s"
+        return text % fmt_clock(p["full_at"])
+    text = "Pace +%d%%/h: lasts to reset" if long else "+%d%%/h, lasts"
+    return text % round(p["per_hour"])
 
 
 # --- run estimates (from usage_learn.py's model) -------------------------------

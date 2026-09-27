@@ -2,7 +2,8 @@
 
 A small frameless widget that floats above the desktop. Drag it anywhere; the
 position is remembered. Right-click for the menu, double-click to open the
-usage page.
+usage page. The arrow top-right folds it down to one line (label, percentage,
+and a ⚠ if a run won't fit) and back out.
 
 Three presets, switchable live and shared with the tray icon:
   badge   flat tile with the percentage as a big number
@@ -69,6 +70,7 @@ class Overlay:
         self.scale = core.get_scale(self.cfg)
         self.ghost = core.get_ghost(self.cfg)
         self.estimate_for = core.get_estimate_for(self.cfg)
+        self.folded = core.get_folded(self.cfg)
         self._positioned = False  # until then there's no real position to re-clamp
         self._ghost_ok = True     # does this platform support -transparentcolor?
         self._settings = None
@@ -85,6 +87,11 @@ class Overlay:
         self._drag = None
         self._moved_to = None
         self._last_key = None
+        self._tip = None        # hover tooltip window, while shown
+        self._tip_job = None
+        self._tip_text = ""
+        self.root.bind("<Enter>", self._tip_enter, add="+")
+        self.root.bind("<Leave>", self._tip_leave, add="+")
 
         self._build_menu()
         self._apply_alpha()
@@ -197,21 +204,36 @@ class Overlay:
         self.frame.configure(bg=bg, padx=pad, pady=max(3, int(round(7 * self.scale))))
 
         # Always label it. A filling bucket next to a clock reads as a battery
-        # indicator otherwise.
-        self.lbl_head = tk.Label(self.frame, text="CLAUDE USAGE", bg=bg, fg=FG_HEAD,
+        # indicator otherwise. Folded, the header is all that's left, so it
+        # carries the percentage too.
+        self.head = tk.Frame(self.frame, bg=bg)
+        self.head.pack(fill="x")
+        self.lbl_head = tk.Label(self.head, text="CLAUDE USAGE", bg=bg, fg=FG_HEAD,
                                  font=(FONT, self._f(7), "bold"))
-        self.lbl_head.pack(anchor="w", pady=(0, max(1, int(3 * self.scale))))
+        self.lbl_head.pack(side="left")
+        self.lbl_mini = tk.Label(self.head, text="", bg=bg, fg=FG_MAIN,
+                                 font=(FONT, self._f(9), "bold"))
+        if self.folded:
+            self.lbl_mini.pack(side="left", padx=(max(3, int(5 * self.scale)), 0))
+        self.lbl_fold = tk.Label(self.head, text="▾" if self.folded else "▴",
+                                 bg=bg, fg=FG_HEAD, cursor="hand2",
+                                 font=(FONT, self._f(9), "bold"))
+        self.lbl_fold.pack(side="right", padx=(max(4, int(8 * self.scale)), 0))
+
+        self.body = tk.Frame(self.frame, bg=bg)
+        if not self.folded:
+            self.body.pack(fill="both", expand=True, pady=(max(1, int(3 * self.scale)), 0))
 
         if self.style == "badge":
-            self.lbl_pct = tk.Label(self.frame, text="--", bg=bg, fg=FG_MAIN,
+            self.lbl_pct = tk.Label(self.body, text="--", bg=bg, fg=FG_MAIN,
                                     font=(FONT, self._f(22), "bold"))
             self.lbl_pct.pack(anchor="w")
-            self.lbl_sub = tk.Label(self.frame, text="", bg=bg, fg=FG_DIM,
+            self.lbl_sub = tk.Label(self.body, text="", bg=bg, fg=FG_DIM,
                                     font=(FONT, self._f(8)), justify="left")
             self.lbl_sub.pack(anchor="w")
-            run_parent = self.frame
+            run_parent = self.body
         else:
-            row = tk.Frame(self.frame, bg=bg)
+            row = tk.Frame(self.body, bg=bg)
             row.pack(fill="both", expand=True)
             g = self.graphic
             self.canvas = tk.Canvas(row, width=g, height=g, bg=bg,
@@ -268,6 +290,9 @@ class Overlay:
         self._ghost_var = tk.BooleanVar(value=self.ghost)
         self.menu.add_checkbutton(label="Ghost mode", variable=self._ghost_var,
                                   command=lambda: self.set_ghost(self._ghost_var.get()))
+        self._folded_var = tk.BooleanVar(value=self.folded)
+        self.menu.add_checkbutton(label="Folded", variable=self._folded_var,
+                                  command=lambda: self.set_folded(self._folded_var.get()))
         self.menu.add_command(label="Appearance...", command=self.open_settings)
 
         self.menu.add_separator()
@@ -284,6 +309,13 @@ class Overlay:
             # Button-3 is right-click everywhere; Button-2 is right-click on some Macs.
             w.bind("<Button-3>", self.on_menu)
             w.bind("<Button-2>", self.on_menu)
+        # The arrow is a button, not a drag handle. A quick second click
+        # arrives as <Double-Button-1>, so that folds too instead of opening
+        # the usage page.
+        for seq in ("<B1-Motion>", "<ButtonRelease-1>"):
+            self.lbl_fold.bind(seq, lambda e: "break")
+        self.lbl_fold.bind("<Button-1>", self.on_fold)
+        self.lbl_fold.bind("<Double-Button-1>", self.on_fold)
 
     def _size(self):
         """Actual window size, falling back to the requested size.
@@ -344,7 +376,85 @@ class Overlay:
 
     # ---------- events ----------
 
+    # ---------- hover tooltip ----------
+
+    def _tip_enter(self, event=None):
+        """Every child widget passes its Enter/Leave through the toplevel's
+        bindings, so this fires moving between labels too; only the first
+        one starts the timer."""
+        if self._tip is None and self._tip_job is None and self._drag is None:
+            self._tip_job = self.root.after(700, self._tip_show)
+
+    def _tip_leave(self, event=None):
+        # Leaving a label for its neighbour is still inside the overlay; check
+        # where the pointer actually is once the event storm has passed.
+        self.root.after(50, self._tip_check)
+
+    def _tip_check(self):
+        try:
+            px, py = self.root.winfo_pointerxy()
+            x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+            w, h = self.root.winfo_width(), self.root.winfo_height()
+            if x <= px < x + w and y <= py < y + h:
+                return
+        except Exception:
+            pass
+        self._tip_hide()
+
+    def _tip_show(self):
+        self._tip_job = None
+        if self._drag is not None or not self._tip_text:
+            return
+        tip = tk.Toplevel(self.root)
+        tip.overrideredirect(True)
+        tip.attributes("-topmost", True)
+        tk.Label(tip, text=self._tip_text, justify="left", bg="#1b1b1f", fg=FG_DIM,
+                 font=(FONT, 9), padx=8, pady=5, bd=1, relief="solid").pack()
+        self._tip = tip
+        self._tip_place()
+        # macOS: -topmost doesn't stick (see _float_above_macos), and a window
+        # made after startup starts at the normal level, i.e. behind other apps.
+        self.root.after(50, self._float_above_macos)
+
+    def _tip_place(self):
+        """Under the overlay, right edges lined up; above it near the bottom."""
+        tip = self._tip
+        tip.update_idletasks()
+        tw, th = tip.winfo_reqwidth(), tip.winfo_reqheight()
+        w, h = self._size()
+        x = self.root.winfo_x() + w - tw
+        y = self.root.winfo_y() + h + 6
+        if y + th > self.root.winfo_screenheight():
+            y = self.root.winfo_y() - th - 6
+        x = max(0, min(x, self.root.winfo_screenwidth() - tw))
+        tip.geometry("+%d+%d" % (x, max(0, y)))
+
+    def _tip_hide(self):
+        if self._tip_job is not None:
+            try:
+                self.root.after_cancel(self._tip_job)
+            except Exception:
+                pass
+            self._tip_job = None
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+    def _tip_update(self):
+        """New numbers arrived while the tooltip is up."""
+        if self._tip is None:
+            return
+        try:
+            self._tip.winfo_children()[0].configure(text=self._tip_text)
+            self._tip_place()
+        except Exception:
+            self._tip_hide()
+
     def on_press(self, event):
+        self._tip_hide()
         self._drag = (event.x_root, event.y_root,
                       self.root.winfo_x(), self.root.winfo_y())
         self._moved_to = None
@@ -377,7 +487,13 @@ class Overlay:
     def on_double(self, event):
         self.open_usage()
 
+    def on_fold(self, event=None):
+        self._tip_hide()
+        self.set_folded(not self.folded)
+        return "break"
+
     def on_menu(self, event):
+        self._tip_hide()
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -415,6 +531,21 @@ class Overlay:
         self._build_content()
         self.refresh()
         self._reclamp()
+
+    def set_folded(self, value):
+        """Fold to the header line or back out, keeping the right edge -- and
+        so the arrow -- where it was, since the default spot is top-right."""
+        w, _h = self._size()
+        right = self.root.winfo_x() + w
+        self.folded = core.set_folded(value)
+        self.cfg = core.load_config()
+        self._folded_var.set(self.folded)
+        self._build_content()
+        self.refresh()
+        new_w, _h = self._size()
+        x, y = self._clamp(right - new_w, self.root.winfo_y())
+        self.root.geometry("+%d+%d" % (x, y))
+        self._save_position(x, y)
 
     def set_alpha(self, value):
         core.set_alpha(value)
@@ -539,18 +670,29 @@ class Overlay:
 
     def refresh(self):
         state = core.read_state()
+        pace = None
         colour = core.to_hex(core.pick_color(state.five_pct, state.stale))
         pct_text = "--" if state.five_pct is None else "%d%%" % state.five_pct
 
         if state.has_limits:
             # Clock time first -- it's what you plan around; the countdown in
             # brackets saves working out how long that actually is.
-            sub = "5h  %s  (%s)" % (core.fmt_clock(state.five_reset),
-                                    core.fmt_short(state.five_reset))
-            if state.seven_pct is not None:
+            if state.five_rolled:
+                sub = "5h  new window"
+            else:
+                sub = "5h  %s  (%s)" % (core.fmt_clock(state.five_reset),
+                                        core.fmt_short(state.five_reset))
+            if state.seven_rolled:
+                sub += "\n7d  0%  new window"
+            elif state.seven_pct is not None:
                 sub += "\n7d  %d%%  %s" % (state.seven_pct, core.fmt_clock(state.seven_reset))
+            pace = core.pace(state)
+            if pace and pace["short"]:
+                # Only when it runs out before the reset: that's the news.
+                # "Lasts to the reset" stays in the hover text.
+                sub += "\n" + core.pace_text(pace)
             if state.stale:
-                sub += "\nSTALE - %s" % core.fmt_age(state.captured_at)
+                sub += "\nas of %s" % core.fmt_age(state.captured_at)
         else:
             sub = "no data\nClaude Code not running?"
 
@@ -564,9 +706,13 @@ class Overlay:
             # Rounded so a tiny model update doesn't force a redraw every poll.
             projection = (round(state.five_pct + est["five_typical"], 1),
                           round(state.five_pct + est["five_worst"], 1))
+        tip_text = core.build_tooltip(state, est, pace)
+        if tip_text != self._tip_text:
+            self._tip_text = tip_text
+            self._tip_update()
 
         key = (pct_text, sub, colour, run_text, run_colour, projection,
-               self.style, self.ghost, self.scale)
+               self.style, self.ghost, self.scale, self.folded)
         if key == self._last_key:
             return
         self._last_key = key
@@ -582,13 +728,16 @@ class Overlay:
             # Normally the whole tile carries the colour. Ghosting has no tile,
             # so the number itself becomes the coloured element.
             bg = self.panel_bg if ghosting else colour
-            for w in (self.frame, self.lbl_pct, self.lbl_sub, self.lbl_head, self.lbl_run):
+            for w in (self.frame, self.head, self.body, self.lbl_pct, self.lbl_sub,
+                      self.lbl_head, self.lbl_mini, self.lbl_fold, self.lbl_run):
                 try:
                     w.configure(bg=bg)
                 except Exception:
                     pass
             self.lbl_pct.configure(fg=colour if ghosting else FG_MAIN)
+            self.lbl_mini.configure(fg=colour if ghosting else FG_MAIN)
             self.lbl_head.configure(fg=FG_HEAD if ghosting else FG_HEAD_ON_COLOUR)
+            self.lbl_fold.configure(fg=FG_HEAD if ghosting else FG_HEAD_ON_COLOUR)
             self.lbl_sub.configure(fg=FG_GHOST_SUB if ghosting else FG_DIM)
             # A coloured verdict on the coloured tile would vanish; there the
             # symbol at the start of the line carries it.
@@ -599,12 +748,16 @@ class Overlay:
             else:
                 self._draw_pie(state.five_pct, colour, figure_projection)
             self.lbl_pct.configure(fg=colour)
+            self.lbl_mini.configure(fg=colour)
             self.lbl_sub.configure(fg=FG_GHOST_SUB if ghosting else FG_DIM)
             self.lbl_run.configure(fg=run_colour)
 
         self.lbl_pct.configure(text=pct_text)
         self.lbl_sub.configure(text=sub)
         warn = est is not None and est["verdict"] != core.FITS
+        # Folded, the run and pace lines are hidden; keep their warning visible.
+        warn_folded = warn or bool(pace and pace["short"])
+        self.lbl_mini.configure(text=pct_text + ("  ⚠" if warn_folded else ""))
         self.lbl_run.configure(text=run_text, font=(FONT, self._f(8), "bold" if warn else "normal"))
         if bool(run_text) != self._run_shown:
             if run_text:
