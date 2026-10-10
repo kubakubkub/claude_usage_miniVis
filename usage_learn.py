@@ -16,7 +16,8 @@ puts output, cache reads and different models on one scale, and the learned
 rate turns it back into percent.
 
 statusline.py starts this in the background at most every 30 minutes, so it
-keeps up without anyone running it. Run it directly to see what it learned:
+keeps up without anyone running it. Run it directly to see what it learned,
+and what your last prompts took (read on the spot, never stored):
 
     python usage_learn.py
 
@@ -45,6 +46,7 @@ KEEP_DAYS = 42  # history, observations and runs older than this are dropped
 TRANSCRIPT_DAYS_DEFAULT = 30  # Claude Code's cleanupPeriodDays default
 RUN_SETTLE_SECONDS = 15 * 60  # a run active more recently may not be finished
 RESET_TOLERANCE = 600  # resets_at values this close are the same window
+PROMPTS_SHOWN = 10  # rows in the report's list of recent prompts
 
 # (history key, window length, anchored). The 7-day window starts from 0% at
 # resets_at - 7 days: two snapshots four weeks apart gave the same rate under
@@ -172,6 +174,24 @@ def workflow_name(session_dir: str, run_id: str):
     return match.group(1) if match else None
 
 
+def response_of(line: str):
+    """(id, time, message, entry) of a transcript line holding a response's
+    usage, or None for any other line."""
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return None
+    message = entry.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+        return None
+    when = parse_time(entry.get("timestamp"))
+    if when is None:
+        return None
+    return message.get("id") or entry.get("requestId") or entry.get("uuid"), when, message, entry
+
+
 def scan_transcripts(since: float):
     """Every response since `since` as sorted (time, usd), plus per-run totals.
 
@@ -225,24 +245,15 @@ def scan_transcripts(since: float):
                 for line in fh:
                     if '"usage"' not in line:
                         continue
-                    try:
-                        entry = json.loads(line)
-                    except ValueError:
+                    found = response_of(line)
+                    if found is None or found[1] < since:
                         continue
-                    if not isinstance(entry, dict) or entry.get("type") != "assistant":
-                        continue
-                    message = entry.get("message")
-                    if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
-                        continue
-                    when = parse_time(entry.get("timestamp"))
-                    if when is None or when < since:
-                        continue
-                    key = message.get("id") or entry.get("requestId") or entry.get("uuid") or (path, len(responses))
+                    key, when, message, _ = found
                     # A response streamed as several blocks is written as several
                     # lines with one id and output_tokens still counting up; the
                     # last line carries the final usage, so it replaces the rest.
-                    responses[key] = (when, response_usd(message.get("model"), message["usage"]),
-                                      op, project, agent)
+                    responses[key or (path, len(responses))] = (
+                        when, response_usd(message.get("model"), message["usage"]), op, project, agent)
         except OSError:
             continue
 
@@ -265,6 +276,117 @@ def scan_transcripts(since: float):
         rec["usd"] += usd
         rec["agents"].add(agent)
     return events, ops
+
+
+def scan_prompts(since: float):
+    """Every prompt you sent since `since`, oldest first, with what answering
+    it took: {"t0", "t1", "usd", "model", "agents", "project", "title"}.
+
+    A prompt runs from the line you sent to the last response before your next
+    one, so follow-ups Claude Code starts by itself (a background task
+    reporting back) count towards the prompt that caused them. Subagents and
+    Workflow runs count towards the prompt that was open when they responded.
+
+    Read on demand for the report and never stored: the session title is the
+    only text taken from a transcript, and the prompt itself isn't read.
+    """
+    root = claude_path("projects")
+    prompts = {}  # prompt id -> record
+    responses = {}  # response id -> (prompt record, time, usd, model + effort or None)
+
+    def add(record, found, path, main):
+        key, when, message, entry = found
+        if message.get("model") == "<synthetic>":
+            return  # Claude Code's own notice (an error, a limit), not a response
+        effort = entry.get("effort")
+        label = "%s %s" % (str(message.get("model") or "?").replace("claude-", ""),
+                           effort if isinstance(effort, str) else "")
+        responses[key or (path, len(responses))] = (
+            record, when, response_usd(message.get("model"), message["usage"]),
+            label.strip() if main else None)
+
+    for path in glob.glob(os.path.join(root, "*", "*.jsonl")):
+        try:
+            if os.path.getmtime(path) < since:
+                continue
+        except OSError:
+            continue
+        current = None
+        own = []  # this session's prompts, in order
+        title = None
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"usage"' in line:
+                        found = response_of(line)
+                        if found is not None and current is not None:
+                            add(current, found, path, True)
+                    elif '"aiTitle"' in line:
+                        try:
+                            title = json.loads(line).get("aiTitle") or title
+                        except (ValueError, AttributeError):
+                            pass
+                    elif '"origin"' in line and '"type":"tool_result"' not in line:
+                        try:
+                            entry = json.loads(line)
+                        except ValueError:
+                            continue
+                        if (not isinstance(entry, dict) or entry.get("type") != "user"
+                                or not isinstance(entry.get("origin"), dict)
+                                or entry["origin"].get("kind") != "human"):
+                            continue
+                        when = parse_time(entry.get("timestamp"))
+                        if when is None:
+                            continue
+                        ident = entry.get("promptId") or entry.get("uuid") or (path, len(prompts))
+                        if own and ident == own[-1]["id"]:
+                            continue
+                        # A resumed session repeats the earlier lines, ids included.
+                        current = prompts.get(ident)
+                        if current is None:
+                            current = prompts[ident] = {
+                                "id": ident, "t0": when, "project": os.path.basename(
+                                    str(entry.get("cwd") or "").replace("\\", "/").rstrip("/")),
+                                "agents": set()}
+                        own.append(current)
+        except OSError:
+            continue
+        if not isinstance(title, str):
+            title = ""
+        for record in own:
+            record.setdefault("title", " ".join(title.split()))
+        starts = [record["t0"] for record in own]
+        for sub in glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "**", "agent-*.jsonl"),
+                             recursive=True):
+            try:
+                with open(sub, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"usage"' not in line:
+                            continue
+                        found = response_of(line)
+                        i = bisect.bisect_right(starts, found[1]) - 1 if found else -1
+                        if i >= 0:
+                            own[i]["agents"].add(sub)
+                            add(own[i], found, sub, False)
+            except OSError:
+                continue
+
+    for record, when, usd, label in responses.values():
+        record["usd"] = record.get("usd", 0.0) + usd
+        record["t1"] = max(record.get("t1", when), when)
+        if label:
+            by_model = record.setdefault("by_model", {})
+            by_model[label] = by_model.get(label, 0.0) + usd
+    out = []
+    for record in prompts.values():
+        if record["t0"] < since or "t1" not in record:
+            continue  # too old, or nothing answered it
+        by_model = record.pop("by_model", None) or {"?": 0.0}
+        record["model"] = max(by_model, key=by_model.get)  # the one that did most of it
+        record["agents"] = len(record["agents"])
+        del record["id"]
+        out.append(record)
+    return sorted(out, key=lambda record: record["t0"])
 
 
 # --- history -----------------------------------------------------------------
@@ -576,6 +698,54 @@ def report(model: dict, state=None) -> str:
     return "\n".join(out)
 
 
+def fmt_took(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes >= 60:
+        return "%dh %02dm" % divmod(minutes, 60)
+    return "%dm %02ds" % (minutes, secs) if minutes else "%ds" % secs
+
+
+def fmt_when(when: float) -> str:
+    """Like core.fmt_clock, for a time in the past."""
+    then = datetime.datetime.fromtimestamp(when)
+    days = (datetime.date.today() - then.date()).days
+    if days <= 0:
+        return then.strftime("%H:%M")
+    return then.strftime("%a %H:%M" if days < 7 else "%d %b %H:%M")
+
+
+def prompts_report(prompts, rates: dict, count: int = PROMPTS_SHOWN) -> str:
+    """The last `count` prompts, and what a prompt takes on each model."""
+    def shares(usd):
+        pers = (as_num(core.dig(rates, key, "usd_per_pct")) for key in ("5h", "7d"))
+        return tuple(fmt_pct(usd / per) if per else "--" for per in pers)
+
+    row = "  %-13s  %-7s  %-20s %6s %6s %6s   %s"
+    out = [row[2:] % ("Last %d prompts" % count, "took", "model", "cost", "5h", "7d", "where")]
+    if not prompts:
+        out.append("  none in the transcripts on this machine")
+        return "\n".join(out)
+    for rec in reversed(prompts[-count:]):
+        where = ": ".join(part for part in (rec["project"], rec["title"]) if part)
+        if rec["agents"]:
+            where += " (+%d agent%s)" % (rec["agents"], "" if rec["agents"] == 1 else "s")
+        out.append(row % (
+            fmt_when(rec["t0"]), fmt_took(rec["t1"] - rec["t0"]), rec["model"][:20],
+            fmt_usd(rec["usd"]), *shares(rec["usd"]), where[:60]))
+
+    groups = {}
+    for rec in prompts:
+        groups.setdefault(rec["model"], []).append(rec)
+    out += ["", "A prompt, by model                count   typical    worst   typical took   5h typical"]
+    for name, recs in sorted(groups.items(), key=lambda kv: -len(kv[1]))[:6]:
+        costs = [rec["usd"] for rec in recs]
+        out.append("  %-32s %6d  %8s  %7s  %13s  %11s" % (
+            name[:32], len(recs), fmt_usd(quantile(costs, 0.5)), fmt_usd(quantile(costs, 0.9)),
+            fmt_took(quantile([rec["t1"] - rec["t0"] for rec in recs], 0.5)),
+            shares(quantile(costs, 0.5))[0]))
+    return "\n".join(out)
+
+
 def main(argv) -> int:
     if "--background" in argv:
         try:
@@ -588,7 +758,10 @@ def main(argv) -> int:
             except OSError:
                 pass
         return 0
-    print(report(learn()))
+    model = learn()
+    print(report(model))
+    print()
+    print(prompts_report(scan_prompts(time.time() - transcript_days() * DAY), model["rates"]))
     return 0
 
 

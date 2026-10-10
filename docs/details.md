@@ -153,8 +153,8 @@ times under it.
   percentage, and a ⚠ if the run estimate or the pace looks bad) and back out.
   The right edge stays where it is, so the arrow doesn't jump away from your
   mouse. It remembers whether it was folded.
-- Right-click for: open usage page, style, estimate for, ghost mode, folded,
-  appearance, reset position, quit.
+- Right-click for: open usage page, [recent prompts](#recent-prompts), style,
+  estimate for, ghost mode, folded, appearance, reset position, quit.
 
 ### Pace
 
@@ -331,6 +331,38 @@ Some caveats:
   Python with nothing platform-specific, but they haven't run on macOS or Linux
   yet.
 
+### Recent prompts
+
+The report ends with your last ten prompts and what each one took:
+
+```
+Last 10 prompts  took     model                  cost     5h     7d   where
+  14:02          3m 10s   opus-5-5 medium       $2.61   2.1%   0.2%   project-a: Fix the fold arrow
+  13:40          18m 44s  opus-5-5 medium       $11.7   9.4%   0.7%   project-a: Release review (+6 agents)
+  13:31          22s      sonnet-5-5 medium     $0.09   0.1%   0.0%   project-b: Rename a config key
+
+A prompt, by model                count   typical    worst   typical took   5h typical
+  opus-5-5 medium                     212     $1.59    $9.95         2m 02s         1.3%
+  sonnet-5-5 medium                    41     $0.31    $1.80            48s         0.2%
+```
+
+Use the list to see what a prompt like the one you're about to send has cost
+before, and the table to compare models and effort levels. The overlay shows
+the same thing in a window: right-click → **Recent prompts...**. It takes a few
+seconds to fill in, and **Refresh** reads the transcripts again.
+
+- A prompt runs from the moment you send it to the last response before your
+  next one. Subagents and Workflow runs it started are included, and so is
+  time spent waiting for you to approve something.
+- The model is the one that did most of the work in the main conversation. The
+  cost also covers subagents, whatever model they ran on.
+- The table compares what you actually asked each model, not the same task on
+  both. If the hard problems go to one model, it'll look expensive.
+- It reads the transcripts each time and stores nothing. The session title is
+  the only text it takes; your prompts aren't read. The list does show project
+  folders and titles, so look before you paste it anywhere.
+- It only goes back as far as Claude Code keeps transcripts, 30 days by default.
+
 ## Files
 
 Shared, in the repo root. This is the actual program, one copy for both
@@ -339,7 +371,7 @@ platforms:
 | File | Purpose |
 |------|---------|
 | `statusline.py` | Claude Code statusLine: mirrors payload, logs history, starts the learner |
-| `usage_learn.py` | Learns rates and run costs from history + transcripts; prints the report |
+| `usage_learn.py` | Learns rates and run costs from history + transcripts; prints the report and recent prompts |
 | `check_private.py` | Privacy check: blocks pushing keys, emails, local paths, private terms |
 | `.githooks/pre-push` | Runs that check on every push, once enabled |
 | `CLAUDE.md` | Rules for Claude Code working in this repo, privacy first |

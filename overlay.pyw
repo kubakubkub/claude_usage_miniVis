@@ -23,15 +23,20 @@ Run estimate (right-click -> Estimate for), once usage_learn.py has a model:
 Uses Tkinter only (Python standard library) -- no pystray, no Pillow -- so it
 runs anywhere Python has Tk, including macOS and Linux.
 
-Reads only local files: the mirror written by statusline.py and the model
-written by usage_learn.py. No network calls, no credentials, no API key.
-Costs nothing to run.
+Recent prompts (right-click -> Recent prompts...): what your last prompts took
+in time and share of the limits, and what a prompt takes on each model.
+
+Reads only local files: the mirror written by statusline.py, the model written
+by usage_learn.py and, for that window, Claude Code's transcripts. No network
+calls, no credentials, no API key. Costs nothing to run.
 
 Windows:  pythonw.exe overlay.pyw
 macOS:    python3 overlay.pyw
 """
 import os
 import sys
+import threading
+import time
 import webbrowser
 
 try:
@@ -74,6 +79,7 @@ class Overlay:
         self._positioned = False  # until then there's no real position to re-clamp
         self._ghost_ok = True     # does this platform support -transparentcolor?
         self._settings = None
+        self._prompts = None
         self._apply_job = None
 
         self.root = tk.Tk()
@@ -272,6 +278,7 @@ class Overlay:
     def _build_menu(self):
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="Open usage page", command=self.open_usage)
+        self.menu.add_command(label="Recent prompts...", command=self.open_prompts)
         self.menu.add_separator()
 
         self._style_var = tk.StringVar(value=self.style)
@@ -628,6 +635,72 @@ class Overlay:
             win.update_idletasks()
             win.geometry("+%d+%d" % (max(0, self.root.winfo_x() - 60),
                                      self.root.winfo_y() + self._size()[1] + 12))
+        except Exception:
+            pass
+
+    def open_prompts(self):
+        """The report's list of recent prompts, in a window. Reading the
+        transcripts takes a few seconds, so a thread does it and the window
+        polls for the text; Tk is only ever touched from here."""
+        if self._prompts is not None:
+            try:
+                if self._prompts.winfo_exists():
+                    self._prompts.destroy()
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self.root)
+        self._prompts = win
+        win.title("Claude usage - recent prompts")
+        win.attributes("-topmost", True)
+        win.configure(padx=10, pady=10)
+        mono = "Consolas" if sys.platform.startswith("win") else \
+               ("Menlo" if sys.platform == "darwin" else "DejaVu Sans Mono")
+        text = tk.Text(win, width=118, height=18, wrap="none", font=(mono, 10),
+                       bg=DARK_BG, fg=FG_DIM, relief="flat", padx=8, pady=6)
+        text.insert("1.0", "Reading transcripts...")
+        text.configure(state="disabled")
+        text.pack(fill="both", expand=True)
+        buttons = tk.Frame(win)
+        buttons.pack(fill="x", pady=(8, 0))
+        tk.Button(buttons, text="Close", command=win.destroy).pack(side="right")
+        tk.Button(buttons, text="Refresh", command=self.open_prompts).pack(side="right", padx=(0, 6))
+
+        result = []
+
+        def read():
+            try:
+                import usage_learn as learn
+                since = time.time() - learn.transcript_days() * learn.DAY
+                result.append(learn.prompts_report(learn.scan_prompts(since),
+                                                   core.load_model().get("rates")))
+            except Exception:
+                result.append("Couldn't read the transcripts.")
+
+        def show():
+            try:
+                if not win.winfo_exists():
+                    return
+                if not result:
+                    win.after(200, show)
+                    return
+                text.configure(state="normal")
+                text.delete("1.0", "end")
+                text.insert("1.0", result[0])
+                text.configure(state="disabled")
+            except Exception:
+                pass
+
+        threading.Thread(target=read, daemon=True).start()
+        win.after(200, show)
+
+        # Next to the widget, pulled back in where it would run off the screen.
+        try:
+            win.update_idletasks()
+            x = min(self.root.winfo_x() - 60, win.winfo_screenwidth() - win.winfo_reqwidth() - 24)
+            y = min(self.root.winfo_y() + self._size()[1] + 12,
+                    win.winfo_screenheight() - win.winfo_reqheight() - 80)
+            win.geometry("+%d+%d" % (max(0, x), max(0, y)))
         except Exception:
             pass
 
