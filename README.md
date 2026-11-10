@@ -60,7 +60,8 @@ it. The colour goes from green to dark red as you fill up.
 - **Hover** for the full picture.
 - The **arrow** in the corner folds it down to one line and back.
 - **Right-click** for the style (badge, bucket or pie), ghost mode (no
-  background), size and opacity.
+  background), size and opacity, and **Recent prompts**: what your last
+  prompts took and cost.
 
 The tray icon has the same styles and puts the details in its tooltip.
 
@@ -76,6 +77,13 @@ a warning like `↗ full ~15:20`.
 
 For the full breakdown, run `windows\usage-report.bat` (or
 `Usage-Report.command` on a Mac).
+
+### Start Claude Code from the widget
+
+On Windows, **drop a folder** on the widget, or pick one under **right-click →
+Start Claude in**, which lists the ten folders you most recently used Claude
+Code in. A PowerShell window opens there with `claude` running. More in
+[docs/details.md](docs/details.md#the-overlay).
 
 ## Good to know
 
