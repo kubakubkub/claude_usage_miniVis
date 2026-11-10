@@ -147,14 +147,29 @@ times under it.
 
 - Drag it anywhere. It remembers where you put it.
 - Double-click to open the usage page.
+- Drop a folder on it (Windows) to open a new PowerShell window there running
+  `claude`. Drop a file and it uses the file's folder; with several items, the
+  first folder wins. It uses PowerShell 7 (`pwsh`) if installed, else Windows
+  PowerShell, and the window stays open after `claude` exits. Claude Code's
+  session markers (`CLAUDECODE`, `CLAUDE_CODE_*`, ...) are dropped from its
+  environment, so it starts as a normal session even if the overlay was
+  launched from inside one; any `CLAUDE*` you set in Windows is kept. In ghost mode
+  only the drawn parts catch the drop; the see-through parts let it fall to
+  whatever is behind.
+- Or right-click -> **Start Claude in** (Windows): the ten folders you most
+  recently ran Claude Code in, newest first, plus *Choose folder...*. The list
+  comes from the `cwd` of the newest transcript in each `~/.claude/projects`
+  folder, read when the menu opens and never stored; folders that no longer
+  exist are skipped.
 - Hover for everything else: both windows with countdowns, the pace, the run
   estimate, when the numbers were last reported, and the model.
 - The small arrow in the top-right corner folds it down to one line (label,
   percentage, and a ⚠ if the run estimate or the pace looks bad) and back out.
   The right edge stays where it is, so the arrow doesn't jump away from your
   mouse. It remembers whether it was folded.
-- Right-click for: open usage page, [recent prompts](#recent-prompts), style,
-  estimate for, ghost mode, folded, appearance, reset position, quit.
+- Right-click for: open usage page, [recent prompts](#recent-prompts), start
+  Claude in, style, estimate for, ghost mode, folded, appearance, reset
+  position, quit.
 
 ### Pace
 
@@ -380,6 +395,7 @@ platforms:
 | `usage_tk.py` | Shared Tk canvas drawing (overlay + chooser previews) |
 | `tray.pyw` | Tray / menu-bar icon (pystray + Pillow) |
 | `overlay.pyw` | Floating desktop widget (Tkinter only) |
+| `usage_drop.py` | Start Claude Code from the overlay: folder drop, recent projects (Windows) |
 | `chooser.pyw` | Preset picker with live previews (Tkinter only) |
 | `install_statusline.py` | Safe settings.json editor (backup + atomic write) |
 | `probe_statusline.py` | Re-verify the payload shape after a Claude Code upgrade |

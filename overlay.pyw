@@ -47,6 +47,7 @@ except Exception:  # pragma: no cover - Tk missing
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import usage_core as core
+import usage_drop as drop
 import usage_tk as utk
 
 POLL_MS = 5000
@@ -112,6 +113,8 @@ class Overlay:
         # mapped before the level sticks.
         self.root.after(300, self._float_above_macos)
         self.root.after(POLL_MS, self._tick)
+        # Drop a folder on the widget to start Claude Code there (Windows).
+        drop.enable(self.root, self.on_drop)
 
     # ---------- appearance helpers ----------
 
@@ -279,6 +282,13 @@ class Overlay:
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="Open usage page", command=self.open_usage)
         self.menu.add_command(label="Recent prompts...", command=self.open_prompts)
+        if sys.platform.startswith("win"):
+            # Refreshed by on_menu just before the menu opens, so the list is
+            # never stale. Not with postcommand, which rebuilds the entries
+            # while the submenu is up -- see _fill_projects_menu.
+            self._projects_menu = tk.Menu(self.menu, tearoff=0)
+            self.menu.add_cascade(label="Start Claude in", menu=self._projects_menu)
+            self._fill_projects_menu()
         self.menu.add_separator()
 
         self._style_var = tk.StringVar(value=self.style)
@@ -531,6 +541,58 @@ class Overlay:
         self.root.geometry("+%d+%d" % (x, y))
         self._save_position(x, y)
 
+    def _fill_projects_menu(self):
+        try:
+            folders = drop.recent_projects(core.claude_dir())
+        except Exception:
+            folders = []
+        # Rebuild only when the list changed. Tk applies menu changes to the
+        # native Windows menu later, at idle; if that happens while the menu
+        # is up, a click lands on an entry id that no longer exists and is
+        # silently dropped. So don't touch it needlessly, and when it did
+        # change, let Tk finish before the menu is shown (update_idletasks).
+        if folders == getattr(self, "_projects_shown", None):
+            return
+        self._projects_shown = folders
+        m = self._projects_menu
+        m.delete(0, "end")
+        for folder in folders:
+            m.add_command(label=drop.menu_label(folder),
+                          command=lambda f=folder: self.start_claude(f))
+        if not folders:
+            m.add_command(label="(no recent projects)", state="disabled")
+        m.add_separator()
+        m.add_command(label="Choose folder...", command=self._choose_folder)
+        self.root.update_idletasks()
+
+    def _choose_folder(self):
+        try:
+            from tkinter import filedialog
+            folder = filedialog.askdirectory(parent=self.root, mustexist=True,
+                                             title="Start Claude Code in")
+        except Exception:
+            return
+        if folder:
+            self.start_claude(os.path.normpath(folder))
+
+    def on_drop(self, paths):
+        """A folder (or a file) was dropped: open Claude Code in it."""
+        folder = drop.folder_for(paths)
+        if folder:
+            self.start_claude(folder)
+
+    def start_claude(self, folder):
+        try:
+            drop.launch_claude(folder)
+        except Exception as exc:
+            try:
+                from tkinter import messagebox
+                messagebox.showerror("Claude usage",
+                                     "Couldn't start Claude Code in\n%s\n\n%s" % (folder, exc),
+                                     parent=self.root)
+            except Exception:
+                pass
+
     def on_double(self, event):
         self.open_usage()
 
@@ -541,6 +603,8 @@ class Overlay:
 
     def on_menu(self, event):
         self._tip_hide()
+        if getattr(self, "_projects_menu", None) is not None:
+            self._fill_projects_menu()
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
