@@ -353,12 +353,52 @@ class Overlay:
         self.root.geometry("+%d+%d" % (x, y))
         self._positioned = True
 
+    def _work_area(self, x, y):
+        """(left, top, right, bottom) of the usable area where (x, y) lies.
+
+        On Windows that is the work area of the nearest monitor, i.e. the
+        screen minus the taskbar. Clamping to the full screen instead let the
+        badge settle under the taskbar -- running, drawn, and invisible.
+        Elsewhere, or if the call fails, the whole primary screen.
+        """
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", wintypes.DWORD),
+                                ("rcMonitor", wintypes.RECT),
+                                ("rcWork", wintypes.RECT),
+                                ("dwFlags", wintypes.DWORD)]
+
+                user32 = ctypes.windll.user32
+                user32.MonitorFromPoint.restype = wintypes.HMONITOR
+                user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+                user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR,
+                                                   ctypes.POINTER(MONITORINFO)]
+                MONITOR_DEFAULTTONEAREST = 2
+                mon = user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)),
+                                              MONITOR_DEFAULTTONEAREST)
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if mon and user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+                    r = info.rcWork
+                    if r.right > r.left and r.bottom > r.top:
+                        return r.left, r.top, r.right, r.bottom
+            except Exception:
+                pass
+        return 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
     def _clamp(self, x, y):
-        """Keep the widget fully on screen even if the display layout changed."""
+        """Keep the widget fully inside the usable screen area, even if the
+        display layout or the taskbar changed."""
         w, h = self._size()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        return max(0, min(int(x), sw - w)), max(0, min(int(y), sh - h))
+        x, y = int(x), int(y)
+        # Pick the monitor by the badge's centre, not its corner.
+        left, top, right, bottom = self._work_area(x + w // 2, y + h // 2)
+        return (max(left, min(x, right - w)),
+                max(top, min(y, bottom - h)))
 
     def _save_position(self, x, y):
         """Persist the position, merging into whatever is on disk right now.

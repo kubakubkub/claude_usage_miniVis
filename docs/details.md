@@ -222,7 +222,8 @@ Three things to know:
   technique and can't be tuned away.
 
 The overlay stays out of the taskbar and Alt-Tab, and moves itself back on
-screen if your display layout changes.
+screen if your display layout changes. On Windows it is kept inside the work
+area of its monitor, so it can't end up hidden behind the taskbar.
 
 ## Colours
 
